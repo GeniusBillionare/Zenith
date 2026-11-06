@@ -74,6 +74,7 @@ local Themes = {
 	Astral = Color3.fromRGB(150, 90, 255),
 }
 -- Astral drifts slowly through violet, blue, cyan and a teal green, like an aurora
+Themes.AstralSpeed = 0.1
 Themes.AstralStops = { Color3.fromRGB(150, 85, 255), Color3.fromRGB(70, 125, 255), Color3.fromRGB(0, 205, 235), Color3.fromRGB(55, 235, 170) }
 local ThemeOrder = { "Purple", "Blue", "Cyan", "Green", "Red", "Orange", "Pink", "Astral", "Rainbow" }
 local ThemeName, RainbowSpeed = "Purple", 0.25
@@ -85,7 +86,7 @@ local function Accent(offset)
 	if ThemeName == "Astral" then
 		local stops = Themes.AstralStops
 		local n = #stops
-		local t = ((tick() * 0.1 + (offset or 0) * 0.5) % 1) * n
+		local t = ((tick() * Themes.AstralSpeed + (offset or 0) * 0.5) % 1) * n
 		local i = math.floor(t)
 		local f = t - i
 		return stops[i % n + 1]:Lerp(stops[(i + 1) % n + 1], f * f * (3 - 2 * f))
@@ -149,14 +150,15 @@ ui.LogoShapes = {
 	},
 }
 -- height = pixel height of the logo. opts.text draws the ZENITH wordmark underneath, opts.color is the
--- shape color (white by default); the two dots always follow the theme accent
+-- shape color (the theme accent by default, so the whole logo follows your theme)
 function ui.DrawLogo(parent, height, opts)
 	opts = opts or {}
 	local OX, OY, FW, MH, FH = 282, 386, 644, 346, 437
 	local s = height / (opts.text and FH or MH)
-	local col = opts.color or WHITE
+	local fixed = opts.color
 	local root = New("Frame", { Name = "ZenithLogo", Size = UDim2.fromOffset(math.floor(FW * s + 0.5), math.floor(height + 0.5)), BackgroundTransparency = 1, BorderSizePixel = 0 }, parent)
-	local function fill(poly)
+	local function fill(poly, off)
+		local parts = {}
 		local n = #poly / 2
 		local ymin, ymax = math.huge, -math.huge
 		for i = 2, #poly, 2 do ymin = math.min(ymin, poly[i]); ymax = math.max(ymax, poly[i]) end
@@ -175,18 +177,25 @@ function ui.DrawLogo(parent, height, opts)
 				local x0 = math.floor((xs[k] - OX) * s + 0.5)
 				local x1 = math.floor((xs[k + 1] - OX) * s + 0.5)
 				if x1 <= x0 then x1 = x0 + 1 end
-				New("Frame", { Position = UDim2.fromOffset(x0, r), Size = UDim2.fromOffset(x1 - x0, 1), BackgroundColor3 = col, BorderSizePixel = 0 }, root)
+				table.insert(parts, New("Frame", { Position = UDim2.fromOffset(x0, r), Size = UDim2.fromOffset(x1 - x0, 1), BackgroundColor3 = fixed or WHITE, BorderSizePixel = 0 }, root))
 			end
 		end
+		-- the whole logo follows the theme; one painter per shape keeps it cheap
+		if not fixed then
+			AddPainter(root, function()
+				local c = Accent(off)
+				for _, f in ipairs(parts) do f.BackgroundColor3 = c end
+			end)
+		end
 	end
-	for _, p in ipairs(ui.LogoShapes.Mark) do fill(p) end
+	for i, p in ipairs(ui.LogoShapes.Mark) do fill(p, (i - 1) * 0.25) end
 	for i, d in ipairs(ui.LogoShapes.Dots) do
 		local size = math.max(2, d[3] * 2 * s)
 		local dot = New("Frame", { Position = UDim2.fromOffset((d[1] - OX) * s - size / 2, (d[2] - OY) * s - size / 2), Size = UDim2.fromOffset(size, size), BorderSizePixel = 0 }, root)
 		New("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
-		AddPainter(dot, function() dot.BackgroundColor3 = Accent(i * 0.2) end)
+		AddPainter(dot, function() dot.BackgroundColor3 = fixed or Accent(0.5 + i * 0.1) end)
 	end
-	if opts.text then for _, p in ipairs(ui.LogoShapes.Letters) do fill(p) end end
+	if opts.text then for i, p in ipairs(ui.LogoShapes.Letters) do fill(p, 0.1 + i * 0.05) end end
 	return root
 end
 
@@ -204,6 +213,21 @@ function ui.Splash()
 		local t2 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { GroupTransparency = 1 })
 		t2:Play()
 		t2.Completed:Connect(function() cg:Destroy() end)
+	end)
+end
+
+-- the game's own values, saved before anything here can change them; modules go back to these when turned off
+ui.Def = { FOV = Camera.FieldOfView, Gravity = workspace.Gravity, MaxZoom = LP.CameraMaxZoomDistance, MinZoom = LP.CameraMinZoomDistance }
+function ui.CaptureHumanoid(h)
+	ui.Def.WalkSpeed, ui.Def.JumpPower, ui.Def.UseJumpPower = h.WalkSpeed, h.JumpPower, h.UseJumpPower
+	ui.Def.HipHeight, ui.Def.AutoRotate = h.HipHeight, h.AutoRotate
+end
+do
+	local h0 = Hum()
+	if h0 then ui.CaptureHumanoid(h0) end
+	Conn(LP.CharacterAdded, function(c)
+		local h = c:WaitForChild("Humanoid", 5)
+		if h then ui.CaptureHumanoid(h) end
 	end)
 end
 
@@ -272,7 +296,7 @@ Module{ Name = "Speed", Category = "Movement", Desc = "Run faster than normal. P
 		Slider("Speed", 16, 250, 1, 40, "Target speed in studs per second. Roblox's default is 16."),
 	},
 	OnEnable = function(m) local h = Hum(); m._orig = h and h.WalkSpeed or 16 end,
-	OnDisable = function(m) local h = Hum(); if h then h.WalkSpeed = m._orig or 16 end end,
+	OnDisable = function(m) local h = Hum(); if h then h.WalkSpeed = ui.Def.WalkSpeed or m._orig or 16 end end,
 	OnTick = function(m, dt)
 		local h, r = Hum(), Root(); if not h or not r then return end
 		local mode, sp = m.Values.Mode, m.Values.Speed
@@ -536,7 +560,7 @@ Module{ Name = "InfiniteJump", Category = "Movement", Desc = "Lets you jump agai
 Module{ Name = "HighJump", Category = "Movement", Desc = "Raises your jump power so every jump goes higher.",
 	Settings = { Slider("Power", 50, 400, 1, 120, "Jump power. Roblox's default is 50.") },
 	OnEnable = function(m) local h = Hum(); if h then m._u, m._p = h.UseJumpPower, h.JumpPower end end,
-	OnDisable = function(m) local h = Hum(); if h then h.UseJumpPower = m._u ~= false; h.JumpPower = m._p or 50 end end,
+	OnDisable = function(m) local h = Hum(); if h then if ui.Def.UseJumpPower ~= nil then h.UseJumpPower = ui.Def.UseJumpPower else h.UseJumpPower = m._u ~= false end; h.JumpPower = ui.Def.JumpPower or m._p or 50 end end,
 	OnTick = function(m) local h = Hum(); if h then h.UseJumpPower = true; h.JumpPower = m.Values.Power end end }
 
 Module{ Name = "Bhop", Category = "Movement", Desc = "Hops automatically while you move and keeps your speed up in the air.",
@@ -582,7 +606,7 @@ Module{ Name = "Spider", Category = "Movement", Desc = "Climb up walls by walkin
 Module{ Name = "Gravity", Category = "Movement", Desc = "Changes gravity for your own physics. Low values make you float, high values slam you down.",
 	Settings = { Slider("Gravity", 0, 400, 1, 40, "Gravity in studs per second squared. Roblox's default is 196.2.") },
 	OnEnable = function(m) m._orig = workspace.Gravity end,
-	OnDisable = function(m) workspace.Gravity = m._orig or 196.2 end,
+	OnDisable = function(m) workspace.Gravity = ui.Def.Gravity or m._orig or 196.2 end,
 	OnTick = function(m) workspace.Gravity = m.Values.Gravity end }
 
 Module{ Name = "Dash", Category = "Movement", Desc = "Launches you forward in the direction the camera is facing. Bind it to a key for an instant dash.",
@@ -601,7 +625,7 @@ Module{ Name = "Dash", Category = "Movement", Desc = "Launches you forward in th
 Module{ Name = "Spinbot", Category = "Player", Desc = "Spins your character around quickly.",
 	Settings = { Slider("Speed", 1, 60, 1, 20, "Degrees turned every frame at 60 FPS. Higher spins faster.") },
 	OnEnable = function() local h = Hum(); if h then h.AutoRotate = false end end,
-	OnDisable = function() local h = Hum(); if h then h.AutoRotate = true end end,
+	OnDisable = function() local h = Hum(); if h then h.AutoRotate = ui.Def.AutoRotate ~= false end end,
 	OnTick = function(m, dt)
 		local r = Root(); if r then r.CFrame = r.CFrame * CFrame.Angles(0, math.rad(m.Values.Speed) * dt * 60, 0) end
 	end }
@@ -609,7 +633,7 @@ Module{ Name = "Spinbot", Category = "Player", Desc = "Spins your character arou
 Module{ Name = "HipHeight", Category = "Player", Desc = "Hovers your character above the ground by raising its hip height.",
 	Settings = { Slider("Height", 0, 40, 0.5, 6, "How high you float above the ground, in studs.") },
 	OnEnable = function(m) local h = Hum(); m._orig = h and h.HipHeight or 2 end,
-	OnDisable = function(m) local h = Hum(); if h then h.HipHeight = m._orig end end,
+	OnDisable = function(m) local h = Hum(); if h then h.HipHeight = ui.Def.HipHeight or m._orig end end,
 	OnTick = function(m) local h = Hum(); if h then h.HipHeight = m.Values.Height end end }
 
 Module{ Name = "AntiSit", Category = "Player", Desc = "Stops you from sitting in seats and vehicles.",
@@ -644,13 +668,57 @@ Module{ Name = "AntiVoid", Category = "Player", Desc = "If you fall below the vo
 		end
 	end }
 
-Module{ Name = "AntiFling", Category = "Player", Desc = "Cancels extreme speed and spinning so other players can't fling you across the map.",
-	Settings = { Slider("Threshold", 50, 1000, 10, 250, "Speed (studs per second) above which your movement is zeroed. Raise it if it interferes with Fly or Dash.") },
-	OnTick = function(m)
-		local r = Root(); if not r then return end
-		if r.AssemblyLinearVelocity.Magnitude > m.Values.Threshold or r.AssemblyAngularVelocity.Magnitude > 50 then
-			r.AssemblyLinearVelocity = Vector3.zero
-			r.AssemblyAngularVelocity = Vector3.zero
+Module{ Name = "AntiFling", Category = "Player", Desc = "Stops other players from flinging you: their bodies stop colliding with yours, and any sudden launch or spin is cancelled.",
+	Settings = {
+		Toggle("Ignore Players", true, "Turns off collision with every other player's body on your screen. This is what stops most flings. You also walk through players."),
+		Toggle("Restore Position", true, "If you do get launched, you are put back where you were a moment ago."),
+		Toggle("Heavy Body", false, "Makes your own body much denser so small hits barely move you."),
+		Slider("Threshold", 50, 1000, 10, 250, "Speed (studs per second) above which your movement counts as a fling. Raise it if it interferes with Fly or Dash."),
+	},
+	OnEnable = function(m)
+		m._safe, m._saveT = nil, 0
+		-- before physics each frame: other players can no longer push you
+		Hook(m, RunService.Stepped, function()
+			local V = m.Values
+			if V["Ignore Players"] then
+				for _, p in ipairs(Players:GetPlayers()) do
+					local c = p ~= LP and p.Character
+					if c then
+						for _, part in ipairs(c:GetDescendants()) do
+							if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
+						end
+					end
+				end
+			end
+			if V["Heavy Body"] then
+				local c = LP.Character
+				if c then
+					for _, part in ipairs(c:GetChildren()) do
+						if part:IsA("BasePart") then part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0, 1, 1) end
+					end
+				end
+			end
+		end)
+		-- after physics: undo anything that still got through
+		Hook(m, RunService.Heartbeat, function()
+			local r = Root(); if not r then return end
+			local V = m.Values
+			local lin, ang = r.AssemblyLinearVelocity, r.AssemblyAngularVelocity
+			if lin.Magnitude > V.Threshold or ang.Magnitude > 50 then
+				r.AssemblyLinearVelocity = Vector3.zero
+				r.AssemblyAngularVelocity = Vector3.zero
+				if V["Restore Position"] and m._safe then r.CFrame = m._safe end
+			elseif tick() - m._saveT > 0.1 then
+				m._safe, m._saveT = r.CFrame, tick()
+			end
+		end)
+	end,
+	OnDisable = function(m)
+		local c = LP.Character
+		if c then
+			for _, part in ipairs(c:GetChildren()) do
+				if part:IsA("BasePart") then part.CustomPhysicalProperties = nil end
+			end
 		end
 	end }
 
@@ -788,7 +856,7 @@ Module{ Name = "TimeChanger", Category = "Render", Desc = "Locks the time of day
 local Zoom
 local FOVm = Module{ Name = "FOV", Category = "Render", Desc = "Changes your camera's field of view. Higher values show more of the world.",
 	Settings = { Slider("FOV", 30, 120, 1, 90, "Field of view in degrees. Roblox's default is 70.") },
-	OnDisable = function() Camera.FieldOfView = 70 end,
+	OnDisable = function() Camera.FieldOfView = ui.Def.FOV end,
 	OnRender = function(m)
 		if Zoom and Zoom._active then return end
 		Camera.FieldOfView = m.Values.FOV
@@ -799,10 +867,10 @@ Zoom = Module{ Name = "Zoom", Category = "Render", Desc = "Hold a key to zoom th
 		Mode("Key", { "C", "Z", "X", "V" }, "C", "The key you hold to zoom."),
 		Slider("Zoom FOV", 10, 60, 1, 20, "Field of view while zoomed. Lower numbers zoom in more."),
 	},
-	OnDisable = function(m) m._active = false; Camera.FieldOfView = FOVm.Enabled and FOVm.Values.FOV or 70 end,
+	OnDisable = function(m) m._active = false; Camera.FieldOfView = FOVm.Enabled and FOVm.Values.FOV or ui.Def.FOV end,
 	OnRender = function(m, dt)
 		local zooming = Down(Enum.KeyCode[m.Values.Key])
-		local base = FOVm.Enabled and FOVm.Values.FOV or 70
+		local base = FOVm.Enabled and FOVm.Values.FOV or ui.Def.FOV
 		if zooming then m._active = true end
 		if not m._active then return end
 		local target = zooming and m.Values["Zoom FOV"] or base
@@ -850,6 +918,7 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title
 		Toggle("FPS", true, "Shows your frames per second in the bottom left."),
 		Toggle("Ping", true, "Shows your ping in the bottom left."),
 		Toggle("Coords", true, "Shows your X, Y and Z position in the bottom left."),
+		Toggle("Speed", true, "Shows how fast your character is moving, in studs per second."),
 		Slider("Text Size", 11, 24, 1, 14, "Size of the bottom left text."),
 		Toggle("Theme Accent", true, "Uses your theme color for the title and info bar. Picking a Watermark Color turns this off."),
 		ColorSet("Watermark Color", Color3.fromRGB(160, 90, 255), "Color of the title and info bar. Only used when Theme Accent is off."),
@@ -903,6 +972,13 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title
 		local lines = {}
 		if V.FPS then table.insert(lines, "FPS  " .. math.floor(fpsAvg)) end
 		if V.Ping then table.insert(lines, "Ping " .. GetPing() .. "ms") end
+		if V.Speed then
+			local r = Root()
+			if r then
+				m._spd = (m._spd or 0) + (r.AssemblyLinearVelocity.Magnitude - (m._spd or 0)) * math.min(1, dt * 12)
+				table.insert(lines, ("Speed %.1f"):format(m._spd))
+			end
+		end
 		if V.Coords then
 			local r = Root()
 			if r then
@@ -924,7 +1000,7 @@ Module{ Name = "CamDistance", Category = "Render", Desc = "Removes the limit on 
 		Slider("Min Zoom", 0, 20, 0.5, 0.5, "Closest the camera can zoom in. 0 allows first person."),
 	},
 	OnEnable = function(m) m._o = { LP.CameraMaxZoomDistance, LP.CameraMinZoomDistance } end,
-	OnDisable = function(m) LP.CameraMaxZoomDistance, LP.CameraMinZoomDistance = m._o[1], m._o[2] end,
+	OnDisable = function(m) LP.CameraMaxZoomDistance, LP.CameraMinZoomDistance = ui.Def.MaxZoom or m._o[1], ui.Def.MinZoom or m._o[2] end,
 	OnTick = function(m) LP.CameraMaxZoomDistance, LP.CameraMinZoomDistance = m.Values["Max Zoom"], m.Values["Min Zoom"] end }
 
 Module{ Name = "Freecam", Category = "Render", Desc = "Detaches the camera so you can fly around and look without moving your character. WASD to move, Q and E for down and up, hold right mouse to look, Shift to go faster.",
@@ -939,20 +1015,26 @@ Module{ Name = "Freecam", Category = "Render", Desc = "Detaches the camera so yo
 		local r = Root()
 		m._anch = nil
 		if r and m.Values["Freeze Character"] then m._anch = r.Anchored; r.Anchored = true end
-		Hook(m, UIS.InputChanged, function(i)
-			if i.UserInputType == Enum.UserInputType.MouseMovement and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
-				m._yaw -= i.Delta.X * math.rad(0.25)
-				m._pitch = math.clamp(m._pitch - i.Delta.Y * math.rad(0.25), -1.5, 1.5)
-			end
-		end)
 	end,
 	OnDisable = function(m)
 		Camera.CameraType = Enum.CameraType.Custom
+		UIS.MouseBehavior = Enum.MouseBehavior.Default
 		local r, h = Root(), Hum()
 		if r and m._anch ~= nil then r.Anchored = m._anch end
 		if h then Camera.CameraSubject = h end
 	end,
 	OnRender = function(m, dt)
+		-- hold right mouse to look: the cursor is pinned in place and its movement turns the camera
+		if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) and not ui.MenuOpen and not Typing() then
+			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+			local d = UIS:GetMouseDelta()
+			m._yaw -= d.X * math.rad(0.3)
+			m._pitch = math.clamp(m._pitch - d.Y * math.rad(0.3), -1.5, 1.5)
+			m._looking = true
+		elseif m._looking then
+			m._looking = false
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+		end
 		local rot = CFrame.fromOrientation(m._pitch, m._yaw, 0)
 		local dir = Vector3.zero
 		if Down(Enum.KeyCode.W) then dir += rot.LookVector end
@@ -1363,15 +1445,16 @@ local Notifs = Module{ Name = "Notifications", Category = "Settings", Desc = "Sh
 		Slider("Duration", 1, 8, 0.5, 3, "How many seconds each pop-up stays on screen."),
 		Toggle("Module Toggles", false, "Also shows a pop-up whenever a module is turned on or off."),
 	} }
-Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of the whole client. Rainbow cycles through every color, Astral is a black aurora of violet, blue and cyan.", Passive = true,
+Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of the whole client. Rainbow cycles through every color, Astral drifts through violet, blue, cyan and teal.", Passive = true,
 	Settings = {
 		Mode("Color", ThemeOrder, "Purple", "The accent color used across the menu, array list and visuals."),
 		Slider("Rainbow Speed", 0.05, 1, 0.05, 0.25, "How fast the Rainbow theme cycles through colors."),
+		Slider("Astral Speed", 0.02, 0.6, 0.02, 0.1, "How fast the Astral theme drifts through violet, blue, cyan and teal."),
 	},
 	OnChanged = function(m)
 		ThemeName, RainbowSpeed = m.Values.Color, m.Values["Rainbow Speed"]
+		Themes.AstralSpeed = m.Values["Astral Speed"]
 		Repaint()
-		if ui.ApplyInterface then ui.ApplyInterface() end
 	end }
 local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Controls how this menu opens and what it looks like.", Passive = true,
 	Settings = {
@@ -1813,7 +1896,7 @@ local Menu = New("Frame", { Name = "Menu", Size = UDim2.fromScale(1, 1), Backgro
 ui.MenuFrame = Menu
 local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, Menu)
 
--- Astral theme: panel underlines become a drifting gradient and soft aurora curtains glow behind the panels
+-- Astral theme: panel underlines become a drifting aurora gradient
 ui.Lines = {}
 function ui.StyleLine(line, offset, header)
 	local st = Themes.AstralStops
@@ -1825,38 +1908,13 @@ function ui.StyleLine(line, offset, header)
 		local astral = ThemeName == "Astral"
 		line.BackgroundColor3 = astral and WHITE or Accent(offset)
 		g.Enabled = astral
-		header.BackgroundColor3 = astral and Color3.fromRGB(4, 4, 9) or C_HEAD
 	end)
 end
-do
-	local aur = New("Frame", { Name = "Aurora", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Visible = false, ZIndex = 2 }, Menu)
-	local SLICES = 16
-	local bands = {}
-	for _, d in ipairs({ { 0.14, 0.36, 0.00, 0.0 }, { 0.40, 0.40, 0.25, 1.7 }, { 0.66, 0.36, 0.50, 3.1 }, { 0.88, 0.32, 0.75, 4.6 } }) do
-		local f = New("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(d[1], 1), Size = UDim2.fromScale(d[2], 0.8), BackgroundTransparency = 1, BorderSizePixel = 0 }, aur)
-		local b = { f = f, x = d[1], w = d[2], off = d[3], ph = d[4], slices = {} }
-		for k = 1, SLICES do
-			local v = (k - 0.5) / SLICES
-			local tr = 1 - 0.24 * v ^ 1.6
-			local sl = New("Frame", { Position = UDim2.fromScale(0, (k - 1) / SLICES), Size = UDim2.new(1, 0, 1 / SLICES, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, f)
-			New("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, tr), NumberSequenceKeypoint.new(1, 1) }) }, sl)
-			table.insert(b.slices, sl)
-		end
-		table.insert(bands, b)
-	end
-	function ui.AuroraStep()
-		local on = ThemeName == "Astral" and ui.MenuOpen
-		aur.Visible = on and true or false
-		if not on then return end
-		local t = tick()
-		for _, b in ipairs(bands) do
-			b.f.Position = UDim2.fromScale(b.x + 0.04 * math.sin(t * 0.25 + b.ph), 1)
-			b.f.Size = UDim2.fromScale(b.w * (1 + 0.18 * math.sin(t * 0.4 + b.ph * 1.3)), 0.78 + 0.1 * math.sin(t * 0.3 + b.ph))
-			local col = Accent(b.off)
-			for _, sl in ipairs(b.slices) do sl.BackgroundColor3 = col end
-		end
-		for i, g in ipairs(ui.Lines) do g.Offset = Vector2.new(math.sin(t * 0.5 + i) * 0.3, 0) end
-	end
+-- Astral: the panel underlines slowly shimmer through the aurora colors
+function ui.AuroraStep()
+	if ThemeName ~= "Astral" then return end
+	local t = tick()
+	for i, g in ipairs(ui.Lines) do g.Offset = Vector2.new(math.sin(t * 0.5 + i) * 0.3, 0) end
 end
 local Modal = New("TextButton", { Size = UDim2.new(), BackgroundTransparency = 1, Text = "", Modal = false }, Menu)
 
@@ -2634,7 +2692,7 @@ local function MenuKey() return Enum.KeyCode[GuiSettings.Values["Menu Key"]] end
 function ui.ApplyInterface()
 	if ui.MenuOpen then
 		TweenService:Create(Blur, TweenInfo.new(0.2), { Size = GuiSettings.Values["Background Blur"] and 14 or 0 }):Play()
-		TweenService:Create(Dim, TweenInfo.new(0.2), { BackgroundTransparency = GuiSettings.Values["Background Dim"] and (ThemeName == "Astral" and 0.3 or 0.6) or 1 }):Play()
+		TweenService:Create(Dim, TweenInfo.new(0.2), { BackgroundTransparency = GuiSettings.Values["Background Dim"] and 0.6 or 1 }):Play()
 	end
 end
 
