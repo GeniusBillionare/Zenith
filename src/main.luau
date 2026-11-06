@@ -1,5 +1,5 @@
 --[[
-    AEROVOLT  |  LocalScript -> StarterPlayer > StarterPlayerScripts
+    ZENITH CLIENT  |  LocalScript -> StarterPlayer > StarterPlayerScripts
     ClickGUI style dropdown menu.
 
     RightShift         open / close menu (changeable in Settings > GUI)
@@ -24,11 +24,14 @@ local Camera = workspace.CurrentCamera
 local Mouse  = LP:GetMouse()
 local PG     = LP:WaitForChild("PlayerGui")
 
-local oldGui = PG:FindFirstChild("AerovoltClient"); if oldGui then oldGui:Destroy() end
-local oldBlur = Lighting:FindFirstChild("AerovoltBlur"); if oldBlur then oldBlur:Destroy() end
+local oldGui = PG:FindFirstChild("ZenithClient"); if oldGui then oldGui:Destroy() end
+local oldGui2 = PG:FindFirstChild("AerovoltClient"); if oldGui2 then oldGui2:Destroy() end
+local oldBlur2 = Lighting:FindFirstChild("AerovoltBlur"); if oldBlur2 then oldBlur2:Destroy() end
 pcall(function() RunService:UnbindFromRenderStep("AerovoltRender") end)
+local oldBlur = Lighting:FindFirstChild("ZenithBlur"); if oldBlur then oldBlur:Destroy() end
+pcall(function() RunService:UnbindFromRenderStep("ZenithRender") end)
 
-local CLIENT, VERSION = "AEROVOLT", "v2.11"
+local CLIENT, VERSION = "ZENITH", "v3.0"
 local FONT, FONT_B = Enum.Font.GothamMedium, Enum.Font.GothamBold
 
 ----------------------------------------------------------------------
@@ -38,7 +41,7 @@ local Conns = {}
 local function Conn(sig, fn) local c = sig:Connect(fn); table.insert(Conns, c); return c end
 local function Safe(fn, ...)
 	local ok, err = pcall(fn, ...)
-	if not ok then warn("[Aerovolt] " .. tostring(err)) end
+	if not ok then warn("[Zenith] " .. tostring(err)) end
 end
 local function Hum() local c = LP.Character return c and c:FindFirstChildOfClass("Humanoid") end
 local function Root() local c = LP.Character return c and c:FindFirstChild("HumanoidRootPart") end
@@ -68,13 +71,24 @@ local Themes = {
 	Cyan = Color3.fromRGB(0, 200, 215),    Green = Color3.fromRGB(70, 215, 110),
 	Red = Color3.fromRGB(255, 70, 80),     Orange = Color3.fromRGB(255, 150, 50),
 	Pink = Color3.fromRGB(255, 100, 200),  Rainbow = Color3.new(1, 1, 1),
+	Astral = Color3.fromRGB(150, 90, 255),
 }
-local ThemeOrder = { "Purple", "Blue", "Cyan", "Green", "Red", "Orange", "Pink", "Rainbow" }
+-- Astral drifts slowly through violet, blue, cyan and a teal green, like an aurora
+Themes.AstralStops = { Color3.fromRGB(150, 85, 255), Color3.fromRGB(70, 125, 255), Color3.fromRGB(0, 205, 235), Color3.fromRGB(55, 235, 170) }
+local ThemeOrder = { "Purple", "Blue", "Cyan", "Green", "Red", "Orange", "Pink", "Astral", "Rainbow" }
 local ThemeName, RainbowSpeed = "Purple", 0.25
 
 local function Accent(offset)
 	if ThemeName == "Rainbow" then
 		return Color3.fromHSV((tick() * RainbowSpeed + (offset or 0)) % 1, 0.65, 1)
+	end
+	if ThemeName == "Astral" then
+		local stops = Themes.AstralStops
+		local n = #stops
+		local t = ((tick() * 0.1 + (offset or 0) * 0.5) % 1) * n
+		local i = math.floor(t)
+		local f = t - i
+		return stops[i % n + 1]:Lerp(stops[(i + 1) % n + 1], f * f * (3 - 2 * f))
 	end
 	return Themes[ThemeName]
 end
@@ -108,11 +122,90 @@ local CatDesc = {
 	Player = "Modules that change or protect your own character.",
 	Render = "Modules that change what you see on your screen.",
 	Utility = "Teleports, tools and quality-of-life modules.",
-	Settings = "Configure Aerovolt itself: theme, menu, array list and more.",
+	Settings = "Configure Zenith itself: theme, menu, array list and more.",
 }
 local Modules, ByCat = {}, {}
 for _, c in ipairs(Categories) do ByCat[c] = {} end
 local ui = {}
+
+----------------------------------------------------------------------
+-- Zenith logo, drawn from polygons at runtime (no image upload needed)
+----------------------------------------------------------------------
+-- polygons are flat {x1, y1, x2, y2, ...} in the original 1254px artwork; each one is filled one
+-- pixel row at a time so it stays crisp at any size
+ui.LogoShapes = {
+	Mark = {
+		{ 734, 672, 534, 387, 282, 731, 340, 729, 533, 473, 704, 714 },
+		{ 721, 719, 724, 731, 753, 731, 814, 654, 874, 731, 926, 731, 815, 588 },
+	},
+	Dots = { { 647.5, 488, 12 }, { 679.5, 534.5, 8.5 } },
+	Letters = {
+		{ 387, 785, 387, 791, 409, 791, 387, 818, 387, 823, 419, 823, 419, 818, 397, 818, 418, 790, 418, 785 },
+		{ 475, 785, 475, 823, 503, 823, 503, 818, 481, 818, 481, 807, 500, 807, 500, 801, 481, 801, 481, 791, 503, 791, 503, 785 },
+		{ 559, 785, 559, 823, 565, 823, 565, 798, 589, 823, 594, 823, 594, 785, 588, 785, 588, 811, 564, 785 },
+		{ 651, 785, 651, 823, 657, 823, 657, 785 },
+		{ 711, 785, 711, 791, 722, 791, 722, 823, 728, 823, 728, 791, 740, 791, 740, 785 },
+		{ 793, 785, 793, 823, 799, 823, 799, 807, 820, 807, 820, 823, 826, 823, 826, 785, 820, 785, 820, 801, 799, 801, 799, 785 },
+	},
+}
+-- height = pixel height of the logo. opts.text draws the ZENITH wordmark underneath, opts.color is the
+-- shape color (white by default); the two dots always follow the theme accent
+function ui.DrawLogo(parent, height, opts)
+	opts = opts or {}
+	local OX, OY, FW, MH, FH = 282, 386, 644, 346, 437
+	local s = height / (opts.text and FH or MH)
+	local col = opts.color or WHITE
+	local root = New("Frame", { Name = "ZenithLogo", Size = UDim2.fromOffset(math.floor(FW * s + 0.5), math.floor(height + 0.5)), BackgroundTransparency = 1, BorderSizePixel = 0 }, parent)
+	local function fill(poly)
+		local n = #poly / 2
+		local ymin, ymax = math.huge, -math.huge
+		for i = 2, #poly, 2 do ymin = math.min(ymin, poly[i]); ymax = math.max(ymax, poly[i]) end
+		for r = math.floor((ymin - OY) * s), math.ceil((ymax - OY) * s) - 1 do
+			local sy = OY + (r + 0.5) / s
+			local xs = {}
+			for i = 1, n do
+				local j = i % n + 1
+				local ax, ay, bx, by = poly[2 * i - 1], poly[2 * i], poly[2 * j - 1], poly[2 * j]
+				if (ay <= sy and sy < by) or (by <= sy and sy < ay) then
+					table.insert(xs, ax + (sy - ay) / (by - ay) * (bx - ax))
+				end
+			end
+			table.sort(xs)
+			for k = 1, #xs - 1, 2 do
+				local x0 = math.floor((xs[k] - OX) * s + 0.5)
+				local x1 = math.floor((xs[k + 1] - OX) * s + 0.5)
+				if x1 <= x0 then x1 = x0 + 1 end
+				New("Frame", { Position = UDim2.fromOffset(x0, r), Size = UDim2.fromOffset(x1 - x0, 1), BackgroundColor3 = col, BorderSizePixel = 0 }, root)
+			end
+		end
+	end
+	for _, p in ipairs(ui.LogoShapes.Mark) do fill(p) end
+	for i, d in ipairs(ui.LogoShapes.Dots) do
+		local size = math.max(2, d[3] * 2 * s)
+		local dot = New("Frame", { Position = UDim2.fromOffset((d[1] - OX) * s - size / 2, (d[2] - OY) * s - size / 2), Size = UDim2.fromOffset(size, size), BorderSizePixel = 0 }, root)
+		New("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
+		AddPainter(dot, function() dot.BackgroundColor3 = Accent(i * 0.2) end)
+	end
+	if opts.text then for _, p in ipairs(ui.LogoShapes.Letters) do fill(p) end end
+	return root
+end
+
+-- brief fade-in logo when the client loads
+function ui.Splash()
+	local cg = New("CanvasGroup", { Name = "Splash", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromOffset(460, 330), BackgroundTransparency = 1, GroupTransparency = 1, ZIndex = 50 }, ui.Gui)
+	local logo = ui.DrawLogo(cg, 250, { text = true })
+	logo.AnchorPoint = Vector2.new(0.5, 0.5)
+	logo.Position = UDim2.new(0.5, 0, 0.5, -8)
+	New("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0), Size = UDim2.fromOffset(300, 18), BackgroundTransparency = 1, Font = FONT, TextSize = 13, TextColor3 = C_DIM, Text = "ZENITH CLIENT  " .. VERSION }, cg)
+	local t1 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) })
+	t1:Play()
+	task.delay(2.2, function()
+		if not cg.Parent then return end
+		local t2 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { GroupTransparency = 1 })
+		t2:Play()
+		t2.Completed:Connect(function() cg:Destroy() end)
+	end)
+end
 
 local function Module(def)
 	def.Enabled, def.Values, def._conns = false, {}, {}
@@ -204,7 +297,7 @@ end
 local function FlyBuild(m, r)
 	FlyClear(m)
 	m._yaw = m._yaw or 0
-	m._att = New("Attachment", { Name = "AerovoltFly" }, r)
+	m._att = New("Attachment", { Name = "ZenithFly" }, r)
 	m._lv = New("LinearVelocity", { Attachment0 = m._att, RelativeTo = Enum.ActuatorRelativeTo.World, VelocityConstraintMode = Enum.VelocityConstraintMode.Vector, MaxForce = math.huge, VectorVelocity = Vector3.zero }, r)
 	m._ao = New("AlignOrientation", { Attachment0 = m._att, Mode = Enum.OrientationAlignmentMode.OneAttachment, RigidityEnabled = false, MaxTorque = math.huge, Responsiveness = 25, CFrame = CFrame.fromOrientation(0, m._yaw, 0) }, r)
 end
@@ -276,7 +369,7 @@ local function VFlyClear(m)
 		if m[k] then m[k]:Destroy(); m[k] = nil end
 	end
 	m._root, m._seat = nil, nil
-	CAS:UnbindAction("AerovoltVFlySink")
+	CAS:UnbindAction("ZenithVFlySink")
 end
 local function VFlyBuild(m, root, seat)
 	VFlyClear(m)
@@ -286,11 +379,11 @@ local function VFlyBuild(m, root, seat)
 	local l = seat.CFrame.LookVector
 	m._yaw = math.atan2(-l.X, -l.Z)
 	m._vel = root.AssemblyLinearVelocity
-	m._att = New("Attachment", { Name = "AerovoltVFly" }, root)
+	m._att = New("Attachment", { Name = "ZenithVFly" }, root)
 	m._lv = New("LinearVelocity", { Attachment0 = m._att, RelativeTo = Enum.ActuatorRelativeTo.World, VelocityConstraintMode = Enum.VelocityConstraintMode.Vector, MaxForce = math.huge, VectorVelocity = Vector3.zero }, root)
 	m._ao = New("AlignOrientation", { Attachment0 = m._att, Mode = Enum.OrientationAlignmentMode.OneAttachment, RigidityEnabled = false, MaxTorque = math.huge, Responsiveness = 20, CFrame = CFrame.fromOrientation(0, m._yaw, 0) * m._rel:Inverse() }, root)
 	-- Space is our "up" key here, so stop it from also making you jump out of the seat
-	CAS:BindActionAtPriority("AerovoltVFlySink", function() return Enum.ContextActionResult.Sink end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
+	CAS:BindActionAtPriority("ZenithVFlySink", function() return Enum.ContextActionResult.Sink end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
 end
 
 Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehicle you are sitting in with WASD, Space to go up and Shift or Ctrl to go down.",
@@ -342,7 +435,7 @@ Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehi
 -- and the normal idle / walking animations play instead of the falling one.
 ui.Plats = {}
 function ui.MakePlatform(name)
-	return New("Part", { Name = name, Anchored = true, CanCollide = true, CanTouch = false, Transparency = 1, Size = Vector3.new(10, 1, 10), TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth }, workspace)
+	return New("Part", { Name = name, Anchored = true, CanCollide = true, CanTouch = false, Transparency = 1, Size = Vector3.new(22, 1, 22), TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth }, workspace)
 end
 function ui.DropPlatform(key)
 	local p = ui.Plats[key]
@@ -354,15 +447,15 @@ function ui.FeetY(r, h)
 	return r.Position.Y - legs - r.Size.Y / 2
 end
 
-Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin air without falling, with your normal walking animations. Hold Left Ctrl to lower the floor.",
+Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin air without falling, with your normal walking animations. Jump to climb higher, hold Left Ctrl to lower the floor.",
 	Settings = {
-		Toggle("Step Up", false, "Jump to climb: the invisible floor rises to where your jump peaks."),
+		Toggle("Jump Raises Floor", true, "When you jump, the invisible floor lifts to where your jump ends so you climb instead of dropping back down."),
 		Slider("Lower Speed", 5, 80, 1, 25, "How fast the floor drops while you hold Left Ctrl."),
 	},
 	OnEnable = function(m)
 		local r, h = Root(), Hum()
 		if r and h then
-			m._level, m._char, m._prevVy = ui.FeetY(r, h), LP.Character, 0
+			m._level, m._char = ui.FeetY(r, h), LP.Character
 			local v = r.AssemblyLinearVelocity
 			r.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
 		end
@@ -370,21 +463,25 @@ Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin a
 	OnDisable = function() ui.DropPlatform("Air") end,
 	OnTick = function(m, dt)
 		local r, h = Root(), Hum(); if not r or not h then return end
+		local feet = ui.FeetY(r, h)
 		if m._char ~= LP.Character or not m._level then
-			m._level, m._char, m._prevVy = ui.FeetY(r, h), LP.Character, 0
+			m._level, m._char = feet, LP.Character
 		end
 		local V = m.Values
-		if Down(Enum.KeyCode.LeftControl) then m._level -= V["Lower Speed"] * dt end
-		local vy = r.AssemblyLinearVelocity.Y
-		if V["Step Up"] then
-			local feet = ui.FeetY(r, h)
-			-- at the top of a jump, move the floor up to your feet
-			if m._prevVy > 0 and vy <= 0 and feet > m._level + 1 then m._level = feet - 0.05 end
+		local vel = r.AssemblyLinearVelocity
+		if Down(Enum.KeyCode.LeftControl) then
+			m._level -= V["Lower Speed"] * dt
+		elseif V["Jump Raises Floor"] and feet > m._level + 0.6 and vel.Y <= 1 then
+			-- you jumped and stopped rising: the floor moves up under your feet, so you land on it
+			m._level = feet - 0.05
 		end
-		m._prevVy = vy
+		-- pushed or teleported far below the floor: start over from where you are
+		if feet < m._level - 3 and not Down(Enum.KeyCode.LeftControl) then m._level = feet end
 		local plat = ui.Plats.Air
-		if not plat or not plat.Parent then plat = ui.MakePlatform("AerovoltAirWalk"); ui.Plats.Air = plat end
-		plat.CFrame = CFrame.new(r.Position.X, m._level - plat.Size.Y / 2, r.Position.Z)
+		if not plat or not plat.Parent then plat = ui.MakePlatform("ZenithAirWalk"); ui.Plats.Air = plat end
+		-- lead the platform slightly in the direction you move so fast movement never outruns it
+		local lead = Vector3.new(vel.X, 0, vel.Z) * math.min(dt, 0.1) * 3
+		plat.CFrame = CFrame.new(r.Position.X + lead.X, m._level - plat.Size.Y / 2, r.Position.Z + lead.Z)
 	end }
 
 Module{ Name = "Jesus", Category = "Movement", Desc = "Lets you walk on top of water. Hold Left Ctrl to sink.",
@@ -402,7 +499,7 @@ Module{ Name = "Jesus", Category = "Movement", Desc = "Lets you walk on top of w
 		params.FilterDescendantsInstances = skip
 		local hit = workspace:Raycast(r.Position + Vector3.new(0, 4, 0), Vector3.new(0, -60, 0), params)
 		if hit and hit.Material == Enum.Material.Water and not sinking then
-			if not plat or not plat.Parent then plat = ui.MakePlatform("AerovoltJesus"); ui.Plats.Jesus = plat end
+			if not plat or not plat.Parent then plat = ui.MakePlatform("ZenithJesus"); ui.Plats.Jesus = plat end
 			plat.CanCollide = true
 			plat.CFrame = CFrame.new(r.Position.X, hit.Position.Y - plat.Size.Y / 2, r.Position.Z)
 		elseif plat then
@@ -747,9 +844,9 @@ local function GetPing()
 	return ok and math.floor(v) or 0
 end
 local HUDm
-HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Aerovolt title above the array list and FPS, ping and coordinates in the bottom left.",
+HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title above the array list and FPS, ping and coordinates in the bottom left.",
 	Settings = {
-		Toggle("Watermark", true, "Shows the Aerovolt title above the array list."),
+		Toggle("Watermark", true, "Shows the Zenith title above the array list."),
 		Toggle("FPS", true, "Shows your frames per second in the bottom left."),
 		Toggle("Ping", true, "Shows your ping in the bottom left."),
 		Toggle("Coords", true, "Shows your X, Y and Z position in the bottom left."),
@@ -770,7 +867,9 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Aerovolt tit
 		-- title: sits at the top of the same right-aligned column as the array list
 		local wm = New("Frame", { Name = "Watermark", Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, LayoutOrder = 0 }, ui.TopRight)
 		local wmLabel = New("TextLabel", { Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, Font = FONT_B, TextSize = 20, RichText = true, Text = "" }, wm)
-		New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 5) }, wmLabel)
+		local wmLogo = ui.DrawLogo(wm, 18)
+		wmLogo.Position = UDim2.fromOffset(7, 5)
+		New("UIPadding", { PaddingLeft = UDim.new(0, wmLogo.Size.X.Offset + 13), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 5) }, wmLabel)
 		local wmLine = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, wm)
 		-- clicking the title opens / closes the menu
 		local wmBtn = New("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 5 }, wm)
@@ -1008,7 +1107,7 @@ Module{ Name = "Hitbox Visualizer", Category = "Combat", Desc = "Draws a box aro
 					local a = VizObjs[part]
 					if not a or a.Parent ~= part then
 						if a then a:Destroy() end
-						a = New("BoxHandleAdornment", { Name = "AerovoltHitbox", Adornee = part }, part)
+						a = New("BoxHandleAdornment", { Name = "ZenithHitbox", Adornee = part }, part)
 						VizObjs[part] = a
 					end
 					a.Size, a.Color3, a.Transparency = part.Size, col, V.Transparency
@@ -1264,7 +1363,7 @@ local Notifs = Module{ Name = "Notifications", Category = "Settings", Desc = "Sh
 		Slider("Duration", 1, 8, 0.5, 3, "How many seconds each pop-up stays on screen."),
 		Toggle("Module Toggles", false, "Also shows a pop-up whenever a module is turned on or off."),
 	} }
-Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of the whole client. Rainbow cycles through every color.", Passive = true,
+Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of the whole client. Rainbow cycles through every color, Astral is a black aurora of violet, blue and cyan.", Passive = true,
 	Settings = {
 		Mode("Color", ThemeOrder, "Purple", "The accent color used across the menu, array list and visuals."),
 		Slider("Rainbow Speed", 0.05, 1, 0.05, 0.25, "How fast the Rainbow theme cycles through colors."),
@@ -1272,6 +1371,7 @@ Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of 
 	OnChanged = function(m)
 		ThemeName, RainbowSpeed = m.Values.Color, m.Values["Rainbow Speed"]
 		Repaint()
+		if ui.ApplyInterface then ui.ApplyInterface() end
 	end }
 local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Controls how this menu opens and what it looks like.", Passive = true,
 	Settings = {
@@ -1281,7 +1381,8 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 		Toggle("Descriptions", true, "Shows a short description of whatever you hover over. Turn off to hide them completely."),
 		Mode("Description Style", { "Cursor", "Bottom Bar" }, "Cursor", "Cursor shows a small tip next to your mouse. Bottom Bar pins it to the bottom of the screen."),
 		Toggle("High Slider Values", false, "Raises the maximum of speed, distance and size sliders far beyond their normal limits."),
-		Toggle("Keep Across Teleports", false, "Reloads Aerovolt with your current settings after a rejoin or teleport. Needs this script saved as Aerovolt.lua in your executor workspace."),
+		Toggle("Keep Across Teleports", false, "Reloads Zenith with your current settings after a rejoin or teleport. Needs this script saved as Zenith.luau in your executor workspace."),
+		Toggle("Startup Logo", true, "Shows the Zenith logo for a moment when the client loads."),
 	},
 	OnChanged = function(m, name)
 		if name == "High Slider Values" and ui.OnHighChanged then ui.OnHighChanged() end
@@ -1297,18 +1398,18 @@ Module{ Name = "Panic", Category = "Settings", Desc = "Instantly turns off every
 		for _, m in ipairs(Modules) do if m.Enabled and m.Category ~= "Settings" then SetEnabled(m, false, true) end end
 		ui.RebuildList(); ui.Notify("All modules disabled", false)
 	end }
-Module{ Name = "Unload", Category = "Settings", Desc = "Completely removes Aerovolt from your game until you run it again.", Action = function() ui.Unload() end }
+Module{ Name = "Unload", Category = "Settings", Desc = "Completely removes Zenith from your game until you run it again.", Action = function() ui.Unload() end }
 
 ----------------------------------------------------------------------
 -- high slider values + config file (writefile / readfile from the executor's file library)
 ----------------------------------------------------------------------
 do
-	local FILE = "AerovoltConfig.json"
+	local FILE = "ZenithConfig.json"
 	local HttpService = game:GetService("HttpService")
 	ui.ConfigFile = FILE
-	ui.SessionFile = "AerovoltSession.json"
-	ui.KeepFile = "AerovoltKeep.txt"
-	ui.LoaderFile = "Aerovolt.lua"
+	ui.SessionFile = "ZenithSession.json"
+	ui.KeepFile = "ZenithKeep.txt"
+	ui.LoaderFile = "Zenith.luau"
 	ui.CanFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
 	ui.SliderRows = {}
 
@@ -1418,7 +1519,7 @@ do
 
 	-- Keep Across Teleports: queue_on_teleport only runs after a teleport / rejoin from this game, never on a
 	-- normal join, and the queued code does nothing unless the keep flag file still says "1".
-	local PAYLOAD = 'if isfile("AerovoltKeep.txt") and readfile("AerovoltKeep.txt") == "1" and isfile("Aerovolt.lua") then loadstring(readfile("Aerovolt.lua"))() end'
+	local PAYLOAD = 'if isfile("ZenithKeep.txt") and readfile("ZenithKeep.txt") == "1" and isfile("Zenith.luau") then loadstring(readfile("Zenith.luau"))() end'
 	function ui.QueuePersist()
 		if ui._queued then return end
 		if type(queue_on_teleport) ~= "function" then
@@ -1437,7 +1538,7 @@ do
 		if on then
 			local okF, has = pcall(isfile, ui.LoaderFile)
 			if not (okF and has) then
-				ui.Notify("Save this script as Aerovolt.lua in your executor's workspace folder first", false)
+				ui.Notify("Save this script as Zenith.luau in your executor's workspace folder first", false)
 			end
 			ui.QueuePersist()
 		end
@@ -1448,7 +1549,7 @@ do
 	if cfg and type(cfg.t) == "number" and math.abs(os.time() - cfg.t) < 120 then
 		ui.FromSession = true
 	else
-		cfg = ui.ReadConfig()
+		cfg = ui.ReadConfig() or ui.ReadConfig("AerovoltConfig.json")
 	end
 	ui.Config = cfg
 	if cfg then ui.ApplyConfigValues(cfg) end
@@ -1464,7 +1565,7 @@ end)
 ----------------------------------------------------------------------
 -- gui root
 ----------------------------------------------------------------------
-local Gui = New("ScreenGui", { Name = "AerovoltClient", ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999999 }, PG)
+local Gui = New("ScreenGui", { Name = "ZenithClient", ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999999 }, PG)
 ui.Gui = Gui
 
 -- Two coordinate spaces are in play. "Raw" space is the real screen: UserInputService's mouse,
@@ -1485,7 +1586,7 @@ function ui.MousePos()
 	return UIS:GetMouseLocation() - Vector2.new(0, ui.CalDY())
 end
 
-local Blur = New("BlurEffect", { Name = "AerovoltBlur", Size = 0 }, Lighting)
+local Blur = New("BlurEffect", { Name = "ZenithBlur", Size = 0 }, Lighting)
 
 ----------------------------------------------------------------------
 -- ESP drawing
@@ -1711,6 +1812,52 @@ ui.RebuildList = RebuildArrayList
 local Menu = New("Frame", { Name = "Menu", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 10 }, Gui)
 ui.MenuFrame = Menu
 local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, Menu)
+
+-- Astral theme: panel underlines become a drifting gradient and soft aurora curtains glow behind the panels
+ui.Lines = {}
+function ui.StyleLine(line, offset, header)
+	local st = Themes.AstralStops
+	local g = New("UIGradient", { Enabled = false, Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, st[1]), ColorSequenceKeypoint.new(0.35, st[2]),
+		ColorSequenceKeypoint.new(0.7, st[3]), ColorSequenceKeypoint.new(1, st[4]) }) }, line)
+	table.insert(ui.Lines, g)
+	AddPainter(line, function()
+		local astral = ThemeName == "Astral"
+		line.BackgroundColor3 = astral and WHITE or Accent(offset)
+		g.Enabled = astral
+		header.BackgroundColor3 = astral and Color3.fromRGB(4, 4, 9) or C_HEAD
+	end)
+end
+do
+	local aur = New("Frame", { Name = "Aurora", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Visible = false, ZIndex = 2 }, Menu)
+	local SLICES = 16
+	local bands = {}
+	for _, d in ipairs({ { 0.14, 0.36, 0.00, 0.0 }, { 0.40, 0.40, 0.25, 1.7 }, { 0.66, 0.36, 0.50, 3.1 }, { 0.88, 0.32, 0.75, 4.6 } }) do
+		local f = New("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(d[1], 1), Size = UDim2.fromScale(d[2], 0.8), BackgroundTransparency = 1, BorderSizePixel = 0 }, aur)
+		local b = { f = f, x = d[1], w = d[2], off = d[3], ph = d[4], slices = {} }
+		for k = 1, SLICES do
+			local v = (k - 0.5) / SLICES
+			local tr = 1 - 0.24 * v ^ 1.6
+			local sl = New("Frame", { Position = UDim2.fromScale(0, (k - 1) / SLICES), Size = UDim2.new(1, 0, 1 / SLICES, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, f)
+			New("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, tr), NumberSequenceKeypoint.new(1, 1) }) }, sl)
+			table.insert(b.slices, sl)
+		end
+		table.insert(bands, b)
+	end
+	function ui.AuroraStep()
+		local on = ThemeName == "Astral" and ui.MenuOpen
+		aur.Visible = on and true or false
+		if not on then return end
+		local t = tick()
+		for _, b in ipairs(bands) do
+			b.f.Position = UDim2.fromScale(b.x + 0.04 * math.sin(t * 0.25 + b.ph), 1)
+			b.f.Size = UDim2.fromScale(b.w * (1 + 0.18 * math.sin(t * 0.4 + b.ph * 1.3)), 0.78 + 0.1 * math.sin(t * 0.3 + b.ph))
+			local col = Accent(b.off)
+			for _, sl in ipairs(b.slices) do sl.BackgroundColor3 = col end
+		end
+		for i, g in ipairs(ui.Lines) do g.Offset = Vector2.new(math.sin(t * 0.5 + i) * 0.3, 0) end
+	end
+end
 local Modal = New("TextButton", { Size = UDim2.new(), BackgroundTransparency = 1, Text = "", Modal = false }, Menu)
 
 -- hover description bar
@@ -2197,7 +2344,7 @@ local function CreatePanel(cat, index)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -40, 1, -2), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
 	New("TextLabel", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 24, 1, -2), BackgroundTransparency = 1, Text = tostring(#ByCat[cat]), Font = FONT, TextSize = 11, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Right }, header)
 	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, header)
-	Reg(line, "BackgroundColor3", index * 0.12)
+	ui.StyleLine(line, index * 0.12, header)
 
 	local content = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2 }, panel)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, content)
@@ -2264,7 +2411,7 @@ do
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -60, 1, -2), BackgroundTransparency = 1, Text = "Hub", Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
 	New("TextLabel", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 0), Size = UDim2.new(0, 44, 1, -2), BackgroundTransparency = 1, Text = VERSION, Font = FONT, TextSize = 11, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Right }, header)
 	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, header)
-	Reg(line, "BackgroundColor3", 0)
+	ui.StyleLine(line, 0, header)
 
 	local content = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2 }, panel)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, content)
@@ -2372,7 +2519,7 @@ function ui.SaveConfig()
 		ui.Notify("Settings saved", true)
 	else
 		ui.Notify("Could not save settings", false)
-		warn("[Aerovolt] " .. tostring(err))
+		warn("[Zenith] " .. tostring(err))
 	end
 end
 
@@ -2487,7 +2634,7 @@ local function MenuKey() return Enum.KeyCode[GuiSettings.Values["Menu Key"]] end
 function ui.ApplyInterface()
 	if ui.MenuOpen then
 		TweenService:Create(Blur, TweenInfo.new(0.2), { Size = GuiSettings.Values["Background Blur"] and 14 or 0 }):Play()
-		TweenService:Create(Dim, TweenInfo.new(0.2), { BackgroundTransparency = GuiSettings.Values["Background Dim"] and 0.6 or 1 }):Play()
+		TweenService:Create(Dim, TweenInfo.new(0.2), { BackgroundTransparency = GuiSettings.Values["Background Dim"] and (ThemeName == "Astral" and 0.3 or 0.6) or 1 }):Play()
 	end
 end
 
@@ -2549,12 +2696,13 @@ end)
 ----------------------------------------------------------------------
 -- render step (runs right after Roblox's camera so FOV / Freecam stick)
 ----------------------------------------------------------------------
-RunService:BindToRenderStep("AerovoltRender", Enum.RenderPriority.Camera.Value + 1, function(dt)
+RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1, function(dt)
 	Camera = workspace.CurrentCamera
 	for _, m in ipairs(Modules) do if m.Enabled and m.OnRender then Safe(m.OnRender, m, dt) end end
 	Safe(UpdateESP)
 	Safe(UpdateHover)
-	if ThemeName == "Rainbow" then Repaint() end
+	if ThemeName == "Rainbow" or ThemeName == "Astral" then Repaint() end
+	Safe(ui.AuroraStep)
 end)
 
 ----------------------------------------------------------------------
@@ -2563,7 +2711,7 @@ end)
 function ui.Unload()
 	for _, m in ipairs(Modules) do if m.Enabled then SetEnabled(m, false, true) end end
 	for _, c in ipairs(Conns) do c:Disconnect() end
-	pcall(function() RunService:UnbindFromRenderStep("AerovoltRender") end)
+	pcall(function() RunService:UnbindFromRenderStep("ZenithRender") end)
 	Modal.Modal = false
 	Blur:Destroy()
 	Gui:Destroy()
@@ -2586,4 +2734,5 @@ Conn(LP.OnTeleport, function(state)
 	end
 end)
 if GuiSettings.Values["Keep Across Teleports"] then ui.SetKeep(true) end
-ui.Notify("Aerovolt loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or " (config loaded)") or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
+if GuiSettings.Values["Startup Logo"] then Safe(ui.Splash) end
+ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or " (config loaded)") or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
