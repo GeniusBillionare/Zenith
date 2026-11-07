@@ -2212,6 +2212,22 @@ local Drag, PanelDrag, Listening
 local ROWH, SETH, PANEL_W, HEADER_H, GAP = 26, 24, 190, 30, 12
 if ui.Phone then ROWH, SETH, PANEL_W, HEADER_H = 32, 30, 210, 34 end
 
+-- no right click on touch: a quick tap on a panel header (no dragging) folds the panel up or down
+function ui.TapCollapse(header, content)
+	header.InputBegan:Connect(function(i)
+		if i.UserInputType ~= Enum.UserInputType.Touch then return end
+		local start, t0 = Vector2.new(i.Position.X, i.Position.Y), tick()
+		local c
+		c = i.Changed:Connect(function()
+			if i.UserInputState == Enum.UserInputState.End or i.UserInputState == Enum.UserInputState.Cancel then
+				c:Disconnect()
+				local moved = (Vector2.new(i.Position.X, i.Position.Y) - start).Magnitude
+				if moved < 8 and tick() - t0 < 0.35 then content.Visible = not content.Visible end
+			end
+		end)
+	end)
+end
+
 -- a panel's list of modules; on a phone it scrolls once it would be taller than the screen
 function ui.MakeContent(panel)
 	if not ui.Phone then
@@ -2845,22 +2861,6 @@ end)
 ----------------------------------------------------------------------
 -- dragging (panels, HUD, sliders, color wheel)
 ----------------------------------------------------------------------
--- no right click on touch: a quick tap on a panel header (no dragging) folds the panel up or down
-function ui.TapCollapse(header, content)
-	header.InputBegan:Connect(function(i)
-		if i.UserInputType ~= Enum.UserInputType.Touch then return end
-		local start, t0 = Vector2.new(i.Position.X, i.Position.Y), tick()
-		local c
-		c = i.Changed:Connect(function()
-			if i.UserInputState == Enum.UserInputState.End or i.UserInputState == Enum.UserInputState.Cancel then
-				c:Disconnect()
-				local moved = (Vector2.new(i.Position.X, i.Position.Y) - start).Magnitude
-				if moved < 8 and tick() - t0 < 0.35 then content.Visible = not content.Visible end
-			end
-		end)
-	end)
-end
-
 function ui.BeginDrag(frame, input, onEnd, clamp)
 	PanelDrag = { panel = frame, start = Vector2.new(input.Position.X, input.Position.Y), pos = frame.Position, onEnd = onEnd, clamp = clamp }
 end
