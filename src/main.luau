@@ -1565,6 +1565,140 @@ Module{ Name = "TP To Spawn", Category = "Utility", Desc = "Teleports you to the
 		if s and r then r.CFrame = s.CFrame + Vector3.new(0, 5, 0) else ui.Notify("No spawn found", false) end
 	end }
 
+-- On-screen keyboard: tapping a key makes the game see a real key press, so phone players can use
+-- keybinds (including this menu's key) and keyboard-only controls.
+function ui.GetVIM()
+	if ui.VIM == nil then
+		local ok, v = pcall(function() return game:GetService("VirtualInputManager") end)
+		ui.VIM = ok and v or false
+	end
+	return ui.VIM
+end
+ui.KBPages = {
+	{
+		{ { "One", "1" }, { "Two", "2" }, { "Three", "3" }, { "Four", "4" }, { "Five", "5" }, { "Six", "6" }, { "Seven", "7" }, { "Eight", "8" }, { "Nine", "9" }, { "Zero", "0" } },
+		{ { "Q" }, { "W" }, { "E" }, { "R" }, { "T" }, { "Y" }, { "U" }, { "I" }, { "O" }, { "P" } },
+		{ { "A" }, { "S" }, { "D" }, { "F" }, { "G" }, { "H" }, { "J" }, { "K" }, { "L" } },
+		{ { "LeftShift", "Shift", 1.6 }, { "Z" }, { "X" }, { "C" }, { "V" }, { "B" }, { "N" }, { "M" }, { "Backspace", "Del", 1.6 } },
+		{ { "LeftControl", "Ctrl", 1.3 }, { "LeftAlt", "Alt", 1.3 }, { "Space", "Space", 4 }, { "Return", "Enter", 1.6 }, { "@more", "More", 1.4 } },
+	},
+	{
+		{ { "Escape", "Esc" }, { "Tab" }, { "Insert", "Ins" }, { "Delete", "Del" }, { "Home" }, { "End" }, { "PageUp", "PgUp" }, { "PageDown", "PgDn" } },
+		{ { "F1" }, { "F2" }, { "F3" }, { "F4" }, { "F5" }, { "F6" }, { "F7" }, { "F8" }, { "F9" }, { "F10" } },
+		{ { "F11" }, { "F12" }, { "LeftShift", "LShift", 1.3 }, { "RightShift", "RShift", 1.3 }, { "RightControl", "RCtrl", 1.3 }, { "RightAlt", "RAlt", 1.3 } },
+		{ { "Up", "Up" }, { "Left", "Left" }, { "Down", "Down" }, { "Right", "Right" }, { "Space", "Space", 3 }, { "@more", "ABC", 1.4 } },
+	},
+}
+
+Module{ Name = "Keyboard", Category = "Utility", Desc = "Shows an on-screen keyboard for mobile. Tapping a key makes the game see that key being pressed, so keybinds and keyboard-only controls work on a phone.",
+	Settings = {
+		Slider("Size", 0.6, 1.5, 0.05, 1, "How big the keyboard and its keys are."),
+		Slider("Opacity", 0.2, 1, 0.05, 0.85, "How solid the keys are. Lower lets you see the game behind them."),
+		Toggle("Sticky Modifiers", true, "Shift, Ctrl and Alt stay held after one tap and release on the next tap, so you can use key combinations."),
+	},
+	OnChanged = function(m) if m._build then m._build() end end,
+	OnEnable = function(m)
+		local vim = ui.GetVIM()
+		if not vim then
+			ui.Notify("This executor can't simulate key presses, so the keyboard can't work", false)
+		end
+		m._down, m._page = {}, 1
+		local MODS = { LeftShift = true, RightShift = true, LeftControl = true, RightControl = true, LeftAlt = true, RightAlt = true }
+		local function send(key, state)
+			if vim then pcall(function() vim:SendKeyEvent(state, key, false, game) end) end
+		end
+		local function release(key)
+			if m._down[key] then m._down[key] = nil; send(key, false) end
+		end
+		local frame = New("Frame", { Name = "ZenithKeyboard", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, ZIndex = 40 }, ui.Gui)
+		New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3), HorizontalAlignment = Enum.HorizontalAlignment.Center }, frame)
+		local bar = New("TextButton", { Size = UDim2.fromOffset(300, 20), BackgroundColor3 = C_HEAD, BackgroundTransparency = 0.1, BorderSizePixel = 0, AutoButtonColor = false, Text = "KEYBOARD  -  drag here to move", Font = FONT_B, TextSize = 11, TextColor3 = C_DIM, LayoutOrder = 0, ZIndex = 41 }, frame)
+		-- keep the title bar as wide as the keys: the first key row decides the width
+		local barLine = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0, ZIndex = 41 }, bar)
+		Reg(barLine, "BackgroundColor3")
+		bar.InputBegan:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+				-- switch from the bottom-center anchor to plain offsets so dragging works like the panels
+				local ap, sz = frame.AbsolutePosition, frame.AbsoluteSize
+				frame.AnchorPoint = Vector2.zero
+				frame.Position = UDim2.fromOffset(ap.X, ap.Y)
+				ui.BeginDrag(frame, i)
+			end
+		end)
+		local rows = {}
+		function m._build()
+			for _, r in ipairs(rows) do r:Destroy() end
+			rows = {}
+			local V = m.Values
+			local u = math.floor(34 * V.Size + 0.5)
+			-- the title bar is as wide as the widest row (a scale width would collapse inside an auto-sized frame)
+			local widest = 0
+			for _, row in ipairs(ui.KBPages[m._page]) do
+				local w = 3 * (#row - 1)
+				for _, k in ipairs(row) do local kw = k[3] or 1; w += math.floor(u * kw + (kw - 1) * 3 + 0.5) end
+				widest = math.max(widest, w)
+			end
+			bar.Size = UDim2.fromOffset(widest, 20)
+			for ri, row in ipairs(ui.KBPages[m._page]) do
+				local rf = New("Frame", { Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, LayoutOrder = ri, ZIndex = 41 }, frame)
+				New("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) }, rf)
+				table.insert(rows, rf)
+				for ci, k in ipairs(row) do
+					local name, label, w = k[1], k[2] or k[1], k[3] or 1
+					local key = Enum.KeyCode[name]
+					if name == "@more" or key then
+						local b = New("TextButton", { Size = UDim2.fromOffset(math.floor(u * w + (w - 1) * 3 + 0.5), u), BackgroundColor3 = C_ROW, BackgroundTransparency = 1 - V.Opacity, BorderSizePixel = 0, AutoButtonColor = false, Text = label, Font = FONT_B, TextSize = math.max(9, math.floor(12 * V.Size)), TextColor3 = WHITE, LayoutOrder = ci, ZIndex = 42 }, rf)
+						New("UICorner", { CornerRadius = UDim.new(0, 4) }, b)
+						local function paint() b.BackgroundColor3 = (key and m._down[key]) and Accent() or C_ROW end
+						paint()
+						if name == "@more" then
+							b.Activated:Connect(function() m._page = m._page == 1 and 2 or 1; m._build() end)
+						else
+							b.InputBegan:Connect(function(i)
+								if i.UserInputType ~= Enum.UserInputType.Touch and i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+								if MODS[name] and V["Sticky Modifiers"] then
+									-- tap once to hold, tap again to let go
+									if m._down[key] then release(key) else m._down[key] = true; send(key, true) end
+								else
+									m._down[key] = true; send(key, true)
+								end
+								paint()
+							end)
+							b.InputEnded:Connect(function(i)
+								if i.UserInputType ~= Enum.UserInputType.Touch and i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+								if MODS[name] and V["Sticky Modifiers"] then return end
+								release(key)
+								paint()
+								-- a normal key press also lets go of any sticky modifiers
+								if V["Sticky Modifiers"] then
+									local any = false
+									for mk in pairs(MODS) do
+										local code = Enum.KeyCode[mk]
+										if m._down[code] and name ~= mk then release(code); any = true end
+									end
+									if any then m._build() end
+								end
+							end)
+						end
+					end
+				end
+			end
+		end
+		m._build()
+		m._kbFrame, m._release = frame, release
+	end,
+	OnDisable = function(m)
+		if m._down then
+			for key in pairs(m._down) do
+				local vim = ui.VIM
+				if vim then pcall(function() vim:SendKeyEvent(false, key, false, game) end) end
+			end
+			m._down = {}
+		end
+		if m._kbFrame then m._kbFrame:Destroy(); m._kbFrame = nil end
+		m._build = nil
+	end }
+
 Module{ Name = "AntiAFK", Category = "Utility", Desc = "Stops Roblox from kicking you for being idle for too long.",
 	OnEnable = function(m)
 		Hook(m, LP.Idled, function()
@@ -1944,9 +2078,11 @@ local notifCount = 0
 function ui.Notify(text, good)
 	if not Notifs.Enabled then return end
 	notifCount += 1
-	local f = New("Frame", { Size = UDim2.fromOffset(230, 26), BackgroundColor3 = C_HEAD, BackgroundTransparency = 0.1, BorderSizePixel = 0, LayoutOrder = notifCount }, NotifHolder)
+	local f = New("Frame", { Size = UDim2.fromOffset(230, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C_HEAD, BackgroundTransparency = 0.1, BorderSizePixel = 0, LayoutOrder = notifCount }, NotifHolder)
 	New("Frame", { Size = UDim2.new(0, 3, 1, 0), BorderSizePixel = 0, BackgroundColor3 = good == false and Color3.fromRGB(255, 80, 90) or Accent() }, f)
-	local l = New("TextLabel", { Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(12, 0), BackgroundTransparency = 1, Text = text, Font = FONT, TextSize = 13, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, f)
+	-- long messages wrap onto more lines and the box grows taller to fit them
+	local l = New("TextLabel", { Size = UDim2.new(1, -16, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Position = UDim2.fromOffset(12, 0), BackgroundTransparency = 1, Text = text, Font = FONT, TextSize = 13, TextColor3 = WHITE, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, f)
+	New("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6) }, l)
 	task.delay(Notifs.Values.Duration, function()
 		if f.Parent then
 			TweenService:Create(f, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
