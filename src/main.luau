@@ -328,6 +328,7 @@ local function Slider(name, min, max, step, default, desc) return { Name = name,
 local function Toggle(name, default, desc) return { Name = name, Type = "Toggle", Default = default, Desc = desc } end
 local function Mode(name, options, default, desc, suffix) return { Name = name, Type = "Mode", Options = options, Default = default, Desc = desc, Suffix = suffix } end
 local function ColorSet(name, default, desc) return { Name = name, Type = "Color", Default = default, Desc = desc } end
+local function Button(name, desc, fn) return { Name = name, Type = "Button", Desc = desc, Fn = fn } end
 local ColorModes = { "Accent", "Team", "Rainbow", "White", "Red" }
 
 local D_COLOR = "Color used: your accent color, the player's team color, rainbow, white or red."
@@ -1765,8 +1766,16 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 		if name == "Keep Across Teleports" and ui.SetKeep then ui.SetKeep(m.Values[name]) end
 		ui.ApplyInterface()
 	end }
-Module{ Name = "Save Settings", Category = "Settings", Desc = "Saves every module, setting, keybind and panel position. They load automatically next time.",
-	Action = function() ui.SaveConfig() end }
+-- everything about saving and loading lives in this one dropdown. "Default" is the normal saved config;
+-- every game you add gets its own entry in the Target list.
+ui.ConfigsMod = Module{ Name = "Configs", Category = "Settings", Desc = "Save and load your settings, with a separate config for each game. Open it to pick a config and save, load, add or delete it.", Passive = true, NoSave = true,
+	Settings = {
+		Mode("Target", function() return ui.GameNames and ui.GameNames() or { "Default" } end, "Default", "Which config the buttons below use. Default is your normal saved settings. Games you add show up here."),
+		Button("Save Config", "Saves your current settings into the selected config.", function() ui.SaveTarget() end),
+		Button("Load Config", "Loads the selected config right now.", function() ui.LoadTarget() end),
+		Button("Add Game Config", "Creates a config for the game you are in, named after it, from your current settings.", function() ui.AddGameConfig() end),
+		Button("Delete Config", "Deletes the selected game config. The Default config can't be deleted.", function() ui.DeleteTarget() end),
+	} }
 Module{ Name = "Reset Panels", Category = "Settings", Desc = "Puts every panel back in its default position.",
 	Action = function() ui.ResetPanels() end }
 Module{ Name = "Panic", Category = "Settings", Desc = "Instantly turns off every module. Use it if something goes wrong.",
@@ -1920,12 +1929,45 @@ do
 		end
 	end
 
+	-- per-game configs live together in one file; the game is identified by its universe id
+	ui.GamesFile = "ZenithGames.json"
+	ui.GameKey = tostring(game.GameId ~= 0 and game.GameId or game.PlaceId)
+	function ui.ReadGames()
+		local list = {}
+		if not ui.CanFS then return list end
+		local okF, exists = pcall(isfile, ui.GamesFile)
+		if not okF or not exists then return list end
+		local ok, data = pcall(function() return HttpService:JSONDecode(readfile(ui.GamesFile)) end)
+		if ok and type(data) == "table" and type(data.games) == "table" then
+			for _, g in ipairs(data.games) do
+				if type(g) == "table" and type(g.id) == "string" and type(g.name) == "string" and type(g.cfg) == "table" and type(g.cfg.modules) == "table" then
+					table.insert(list, g)
+				end
+			end
+		end
+		return list
+	end
+	function ui.WriteGames()
+		if not ui.CanFS then return false end
+		return (pcall(function() writefile(ui.GamesFile, HttpService:JSONEncode({ games = ui.Games })) end))
+	end
+	ui.Games = ui.ReadGames()
+	function ui.FindGame(id)
+		for _, g in ipairs(ui.Games) do if g.id == id then return g end end
+	end
+
 	-- a session file written right before a teleport (under 2 minutes old) beats the saved config once
 	local cfg = ui.ReadConfig(ui.SessionFile)
 	if cfg and type(cfg.t) == "number" and math.abs(os.time() - cfg.t) < 120 then
 		ui.FromSession = true
 	else
-		cfg = ui.ReadConfig() or ui.ReadConfig("AerovoltConfig.json")
+		-- this game's own config if it has one, otherwise the default
+		local g = ui.FindGame(ui.GameKey)
+		if g then
+			cfg, ui.GameLoaded = g.cfg, g.name
+		else
+			cfg = ui.ReadConfig() or ui.ReadConfig("AerovoltConfig.json")
+		end
 	end
 	ui.Config = cfg
 	if cfg then ui.ApplyConfigValues(cfg) end
@@ -2193,6 +2235,9 @@ ui.RebuildList = RebuildArrayList
 local Menu = New("Frame", { Name = "Menu", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 10 }, Gui)
 ui.MenuFrame = Menu
 local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, Menu)
+-- every panel lives in this frame, which the mouse wheel slides up and down
+ui.ScrollY, ui.ScrollTarget = 0, 0
+ui.Scroller = New("Frame", { Name = "Scroller", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 4 }, Menu)
 
 -- Astral theme: panel underlines become a drifting aurora gradient
 ui.Lines = {}
@@ -2583,6 +2628,7 @@ local function ModeRow(m, s, parent, order)
 	Reg(valL, "TextColor3")
 	local function refresh() valL.Text = tostring(m.Values[s.Name]) end
 	refresh()
+	AddPainter(valL, refresh)
 	local function step(dir)
 		local o = opts()
 		local idx = table.find(o, m.Values[s.Name]) or 0
@@ -2602,6 +2648,16 @@ local function ColorRow(m, s, parent, order)
 	New("UIStroke", { Color = Color3.fromRGB(90, 90, 108), Thickness = 1 }, sw)
 	AddPainter(sw, function() sw.BackgroundColor3 = m.Values[s.Name] end, m)
 	row.MouseButton1Click:Connect(function() ui.OpenPicker(m, s, row) end)
+	return row
+end
+
+local function ButtonRow(m, s, parent, order)
+	local row = SettingButton(parent, order)
+	SettingLabel(row, s.Name)
+	local r = RightLabel(row)
+	r.Text = "click"
+	Reg(r, "TextColor3")
+	row.MouseButton1Click:Connect(function() Safe(s.Fn, m) end)
 	return row
 end
 
@@ -2672,6 +2728,7 @@ local function BuildModuleRow(m, parent, showCat, idx, zref)
 		if s.Type == "Slider" then row = SliderRow(m, s, setFrame, rows)
 		elseif s.Type == "Mode" then row = ModeRow(m, s, setFrame, rows)
 		elseif s.Type == "Color" then row = ColorRow(m, s, setFrame, rows)
+		elseif s.Type == "Button" then row = ButtonRow(m, s, setFrame, rows)
 		else row = ToggleRow(m, s, setFrame, rows) end
 		ui.AddHover(row, function() return ui.HoverText(m.Name .. ": " .. s.Name, s.Desc) end, zref)
 	end
@@ -2741,7 +2798,7 @@ local function Raise(panel)
 end
 
 local function CreatePanel(cat, index)
-	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, Menu)
+	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, ui.Scroller)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -40, 1, -2), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2778,7 +2835,8 @@ local function HubRefresh() for _, f in ipairs(HubPaints) do f() end end
 -- panels can never leave the screen: the whole width and the header always stay visible
 function ui.ClampXY(x, y)
 	local vp = Vector2.new(math.min(ui.Gui.AbsoluteSize.X, Camera.ViewportSize.X), math.min(ui.Gui.AbsoluteSize.Y, Camera.ViewportSize.Y))
-	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, 0, math.max(vp.Y - HEADER_H, 0))
+	local top = -(ui.ScrollY or 0)
+	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, top, math.max(vp.Y - HEADER_H + top, top))
 end
 local function ClampPanel(p)
 	local x, y = ui.ClampXY(p.Position.X.Offset, p.Position.Y.Offset)
@@ -2808,7 +2866,7 @@ end
 ui.SetTab = SetTab
 
 do
-	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, Menu)
+	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, ui.Scroller)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -60, 1, -2), BackgroundTransparency = 1, Text = "Hub", Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2875,6 +2933,8 @@ end
 
 function ui.ResetPanels()
 	ClosePicker()
+	ui.ScrollY, ui.ScrollTarget = 0, 0
+	ui.Scroller.Position = UDim2.new()
 	local vp = Camera.ViewportSize
 	if vp.X < 400 then vp = Vector2.new(1280, 720) end
 	local cols = #PanelFrames + 1
@@ -2896,6 +2956,7 @@ HubRefresh()
 function ui.BuildConfig()
 	local cfg = { version = VERSION, modules = {}, panels = {} }
 	for _, m in ipairs(Modules) do
+		if m.NoSave then continue end
 		local e = { values = {}, bindMode = m.BindMode }
 		if m.Bind then e.bind = m.Bind.Name end
 		if not m.Action and not m.Passive then e.enabled = m.Enabled end
@@ -2959,6 +3020,80 @@ function ui.ApplyLayout(cfg)
 	ui.ClampPanels()
 end
 
+
+----------------------------------------------------------------------
+-- game configs: names, add, save, load, delete
+----------------------------------------------------------------------
+-- shown name of a config; two games with the same title get their id added
+function ui.GameLabel(g)
+	local n = 0
+	for _, o in ipairs(ui.Games) do if o.name == g.name then n += 1 end end
+	return n > 1 and (g.name .. " [" .. g.id .. "]") or g.name
+end
+function ui.GameNames()
+	local t = { "Default" }
+	for _, g in ipairs(ui.Games) do table.insert(t, ui.GameLabel(g)) end
+	return t
+end
+-- the selected game config, or nil when Default is selected
+function ui.TargetGame()
+	local v = ui.ConfigsMod.Values.Target
+	for _, g in ipairs(ui.Games) do if ui.GameLabel(g) == v then return g end end
+end
+-- applies a whole config to the running client and refreshes everything on screen
+function ui.CfgApply(cfg)
+	ui.ApplyConfigValues(cfg)
+	ui.ApplyConfigEnabled(cfg)
+	ui.ApplyLayout(cfg)
+	ui.OnHighChanged()
+	ui.ApplyInterface()
+	Repaint()
+end
+function ui.AddGameConfig()
+	if not ui.CanFS then ui.Notify("Game configs need an executor with file functions", false) return end
+	if ui.FindGame(ui.GameKey) then
+		ui.Notify("This game already has a config. Select it and use Save Config", false)
+		return
+	end
+	task.spawn(function()
+		local ok, info = pcall(function() return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId) end)
+		local name = ok and type(info) == "table" and type(info.Name) == "string" and info.Name or ("Game " .. ui.GameKey)
+		if ui.FindGame(ui.GameKey) then return end
+		local entry = { id = ui.GameKey, name = name, cfg = ui.BuildConfig() }
+		table.insert(ui.Games, entry)
+		if ui.WriteGames() then
+			ui.ConfigsMod.Values.Target = ui.GameLabel(entry)
+			Repaint()
+			ui.Notify("Added config for " .. name .. ". Settings you save now go to it", true)
+		else
+			table.remove(ui.Games, #ui.Games)
+			ui.Notify("Could not save the new config", false)
+		end
+	end)
+end
+function ui.SaveTarget()
+	local g = ui.TargetGame()
+	if not g then ui.SaveConfig() return end
+	if not ui.CanFS then ui.Notify("Saving needs an executor with writefile and readfile", false) return end
+	g.cfg = ui.BuildConfig()
+	if ui.WriteGames() then ui.Notify("Saved to " .. g.name, true) else ui.Notify("Could not save the config", false) end
+end
+function ui.LoadTarget()
+	local g = ui.TargetGame()
+	local cfg = g and g.cfg or ui.ReadConfig()
+	if not cfg then ui.Notify("Nothing saved there yet", false) return end
+	ui.CfgApply(cfg)
+	ui.Notify("Loaded " .. (g and g.name or "default settings"), true)
+end
+function ui.DeleteTarget()
+	local g = ui.TargetGame()
+	if not g then ui.Notify("The Default config can't be deleted", false) return end
+	table.remove(ui.Games, table.find(ui.Games, g))
+	ui.ConfigsMod.Values.Target = "Default"
+	Repaint()
+	if ui.WriteGames() then ui.Notify("Deleted " .. g.name, true) else ui.Notify("Could not update the config file", false) end
+end
+
 ----------------------------------------------------------------------
 -- search
 ----------------------------------------------------------------------
@@ -3015,6 +3150,27 @@ Conn(UIS.InputChanged, function(i)
 		PanelDrag.panel.Position = UDim2.fromOffset(nx, ny)
 	end
 end)
+-- how far the menu can scroll: until the lowest open panel's bottom edge is on screen
+function ui.ScrollLimit()
+	local bottom = 0
+	local function chk(p) if p and p.Visible then bottom = math.max(bottom, p.Position.Y.Offset + p.AbsoluteSize.Y) end end
+	chk(HubPanel)
+	for _, p in ipairs(PanelFrames) do chk(p) end
+	return math.max(0, bottom - ui.Gui.AbsoluteSize.Y + 40)
+end
+Conn(UIS.InputChanged, function(i)
+	if i.UserInputType ~= Enum.UserInputType.MouseWheel or not ui.MenuOpen or ui.Phone then return end
+	if Typing() then return end
+	if Picker.Visible then ClosePicker() end
+	ui.ScrollTarget = math.clamp(ui.ScrollTarget + i.Position.Z * 70, -ui.ScrollLimit(), 0)
+end)
+function ui.ScrollStep(dt)
+	if ui.MenuOpen then ui.ScrollTarget = math.clamp(ui.ScrollTarget, -ui.ScrollLimit(), 0) end
+	if ui.ScrollY == ui.ScrollTarget then return end
+	ui.ScrollY += (ui.ScrollTarget - ui.ScrollY) * math.min(1, dt * 14)
+	if math.abs(ui.ScrollTarget - ui.ScrollY) < 0.5 then ui.ScrollY = ui.ScrollTarget end
+	ui.Scroller.Position = UDim2.fromOffset(0, ui.ScrollY)
+end
 Conn(UIS.InputEnded, function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 		if PanelDrag and PanelDrag.onEnd then Safe(PanelDrag.onEnd) end
@@ -3074,7 +3230,10 @@ Conn(UIS.InputBegan, function(input, gp)
 		Repaint(m)
 		return
 	end
-	if key == MenuKey() then SetMenu(not ui.MenuOpen) return end
+	if key == MenuKey() then
+		if not Typing() then SetMenu(not ui.MenuOpen) end
+		return
+	end
 	if ui.MenuOpen and key == Enum.KeyCode.F and UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
 		SearchBox:CaptureFocus() return
 	end
@@ -3108,6 +3267,7 @@ RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1
 	Safe(UpdateHover)
 	if ThemeName == "Rainbow" or ThemeName == "Astral" then Repaint() end
 	Safe(ui.AuroraStep)
+	Safe(ui.ScrollStep, dt)
 end)
 
 ----------------------------------------------------------------------
@@ -3140,4 +3300,4 @@ Conn(LP.OnTeleport, function(state)
 end)
 if GuiSettings.Values["Keep Across Teleports"] then ui.SetKeep(true) end
 if GuiSettings.Values["Startup Logo"] then Safe(ui.Splash) end
-ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or " (config loaded)") or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
+ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
