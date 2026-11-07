@@ -328,6 +328,7 @@ local function Slider(name, min, max, step, default, desc) return { Name = name,
 local function Toggle(name, default, desc) return { Name = name, Type = "Toggle", Default = default, Desc = desc } end
 local function Mode(name, options, default, desc, suffix) return { Name = name, Type = "Mode", Options = options, Default = default, Desc = desc, Suffix = suffix } end
 local function ColorSet(name, default, desc) return { Name = name, Type = "Color", Default = default, Desc = desc } end
+local function Button(name, desc, fn) return { Name = name, Type = "Button", Desc = desc, Fn = fn } end
 local ColorModes = { "Accent", "Team", "Rainbow", "White", "Red" }
 
 local D_COLOR = "Color used: your accent color, the player's team color, rainbow, white or red."
@@ -1765,19 +1766,16 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 		if name == "Keep Across Teleports" and ui.SetKeep then ui.SetKeep(m.Values[name]) end
 		ui.ApplyInterface()
 	end }
-Module{ Name = "Save Settings", Category = "Settings", Desc = "Saves every module, setting, keybind and panel position. They load automatically next time.",
-	Action = function() ui.SaveConfig() end }
--- per-game configs: pick a target, then save to it or load it. "Default" is the normal saved config.
-ui.ConfigsMod = Module{ Name = "Game Configs", Category = "Settings", Desc = "Keeps a separate saved config for each game. Pick one here, then use Save Config or Load Config. Joining a game that has one loads it automatically.", Passive = true, NoSave = true,
-	Settings = { Mode("Target", function() return ui.GameNames and ui.GameNames() or { "Default" } end, "Default", "Which config Save Config, Load Config and Delete Config use. Default is your normal saved settings.") } }
-Module{ Name = "Add Game Config", Category = "Settings", Desc = "Creates a config for the game you are in, named after it, from your current settings.",
-	Action = function() ui.AddGameConfig() end }
-Module{ Name = "Save Config", Category = "Settings", Desc = "Saves your current settings into the selected Game Configs target.",
-	Action = function() ui.SaveTarget() end }
-Module{ Name = "Load Config", Category = "Settings", Desc = "Loads the selected Game Configs target right now.",
-	Action = function() ui.LoadTarget() end }
-Module{ Name = "Delete Config", Category = "Settings", Desc = "Deletes the selected game config. The Default config can't be deleted.",
-	Action = function() ui.DeleteTarget() end }
+-- everything about saving and loading lives in this one dropdown. "Default" is the normal saved config;
+-- every game you add gets its own entry in the Target list.
+ui.ConfigsMod = Module{ Name = "Configs", Category = "Settings", Desc = "Save and load your settings, with a separate config for each game. Open it to pick a config and save, load, add or delete it.", Passive = true, NoSave = true,
+	Settings = {
+		Mode("Target", function() return ui.GameNames and ui.GameNames() or { "Default" } end, "Default", "Which config the buttons below use. Default is your normal saved settings. Games you add show up here."),
+		Button("Save Config", "Saves your current settings into the selected config.", function() ui.SaveTarget() end),
+		Button("Load Config", "Loads the selected config right now.", function() ui.LoadTarget() end),
+		Button("Add Game Config", "Creates a config for the game you are in, named after it, from your current settings.", function() ui.AddGameConfig() end),
+		Button("Delete Config", "Deletes the selected game config. The Default config can't be deleted.", function() ui.DeleteTarget() end),
+	} }
 Module{ Name = "Reset Panels", Category = "Settings", Desc = "Puts every panel back in its default position.",
 	Action = function() ui.ResetPanels() end }
 Module{ Name = "Panic", Category = "Settings", Desc = "Instantly turns off every module. Use it if something goes wrong.",
@@ -2237,6 +2235,9 @@ ui.RebuildList = RebuildArrayList
 local Menu = New("Frame", { Name = "Menu", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 10 }, Gui)
 ui.MenuFrame = Menu
 local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, Menu)
+-- every panel lives in this frame, which the mouse wheel slides up and down
+ui.ScrollY, ui.ScrollTarget = 0, 0
+ui.Scroller = New("Frame", { Name = "Scroller", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 4 }, Menu)
 
 -- Astral theme: panel underlines become a drifting aurora gradient
 ui.Lines = {}
@@ -2650,6 +2651,16 @@ local function ColorRow(m, s, parent, order)
 	return row
 end
 
+local function ButtonRow(m, s, parent, order)
+	local row = SettingButton(parent, order)
+	SettingLabel(row, s.Name)
+	local r = RightLabel(row)
+	r.Text = "click"
+	Reg(r, "TextColor3")
+	row.MouseButton1Click:Connect(function() Safe(s.Fn, m) end)
+	return row
+end
+
 local function BindRow(m, parent, order)
 	local row = SettingButton(parent, order)
 	SettingLabel(row, "Bind")
@@ -2717,6 +2728,7 @@ local function BuildModuleRow(m, parent, showCat, idx, zref)
 		if s.Type == "Slider" then row = SliderRow(m, s, setFrame, rows)
 		elseif s.Type == "Mode" then row = ModeRow(m, s, setFrame, rows)
 		elseif s.Type == "Color" then row = ColorRow(m, s, setFrame, rows)
+		elseif s.Type == "Button" then row = ButtonRow(m, s, setFrame, rows)
 		else row = ToggleRow(m, s, setFrame, rows) end
 		ui.AddHover(row, function() return ui.HoverText(m.Name .. ": " .. s.Name, s.Desc) end, zref)
 	end
@@ -2786,7 +2798,7 @@ local function Raise(panel)
 end
 
 local function CreatePanel(cat, index)
-	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, Menu)
+	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, ui.Scroller)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -40, 1, -2), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2823,7 +2835,8 @@ local function HubRefresh() for _, f in ipairs(HubPaints) do f() end end
 -- panels can never leave the screen: the whole width and the header always stay visible
 function ui.ClampXY(x, y)
 	local vp = Vector2.new(math.min(ui.Gui.AbsoluteSize.X, Camera.ViewportSize.X), math.min(ui.Gui.AbsoluteSize.Y, Camera.ViewportSize.Y))
-	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, 0, math.max(vp.Y - HEADER_H, 0))
+	local top = -(ui.ScrollY or 0)
+	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, top, math.max(vp.Y - HEADER_H + top, top))
 end
 local function ClampPanel(p)
 	local x, y = ui.ClampXY(p.Position.X.Offset, p.Position.Y.Offset)
@@ -2853,7 +2866,7 @@ end
 ui.SetTab = SetTab
 
 do
-	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, Menu)
+	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, ui.Scroller)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -60, 1, -2), BackgroundTransparency = 1, Text = "Hub", Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2920,6 +2933,8 @@ end
 
 function ui.ResetPanels()
 	ClosePicker()
+	ui.ScrollY, ui.ScrollTarget = 0, 0
+	ui.Scroller.Position = UDim2.new()
 	local vp = Camera.ViewportSize
 	if vp.X < 400 then vp = Vector2.new(1280, 720) end
 	local cols = #PanelFrames + 1
@@ -3135,6 +3150,27 @@ Conn(UIS.InputChanged, function(i)
 		PanelDrag.panel.Position = UDim2.fromOffset(nx, ny)
 	end
 end)
+-- how far the menu can scroll: until the lowest open panel's bottom edge is on screen
+function ui.ScrollLimit()
+	local bottom = 0
+	local function chk(p) if p and p.Visible then bottom = math.max(bottom, p.Position.Y.Offset + p.AbsoluteSize.Y) end end
+	chk(HubPanel)
+	for _, p in ipairs(PanelFrames) do chk(p) end
+	return math.max(0, bottom - ui.Gui.AbsoluteSize.Y + 40)
+end
+Conn(UIS.InputChanged, function(i)
+	if i.UserInputType ~= Enum.UserInputType.MouseWheel or not ui.MenuOpen or ui.Phone then return end
+	if Typing() then return end
+	if Picker.Visible then ClosePicker() end
+	ui.ScrollTarget = math.clamp(ui.ScrollTarget + i.Position.Z * 70, -ui.ScrollLimit(), 0)
+end)
+function ui.ScrollStep(dt)
+	if ui.MenuOpen then ui.ScrollTarget = math.clamp(ui.ScrollTarget, -ui.ScrollLimit(), 0) end
+	if ui.ScrollY == ui.ScrollTarget then return end
+	ui.ScrollY += (ui.ScrollTarget - ui.ScrollY) * math.min(1, dt * 14)
+	if math.abs(ui.ScrollTarget - ui.ScrollY) < 0.5 then ui.ScrollY = ui.ScrollTarget end
+	ui.Scroller.Position = UDim2.fromOffset(0, ui.ScrollY)
+end
 Conn(UIS.InputEnded, function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 		if PanelDrag and PanelDrag.onEnd then Safe(PanelDrag.onEnd) end
@@ -3194,7 +3230,10 @@ Conn(UIS.InputBegan, function(input, gp)
 		Repaint(m)
 		return
 	end
-	if key == MenuKey() then SetMenu(not ui.MenuOpen) return end
+	if key == MenuKey() then
+		if not Typing() then SetMenu(not ui.MenuOpen) end
+		return
+	end
 	if ui.MenuOpen and key == Enum.KeyCode.F and UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
 		SearchBox:CaptureFocus() return
 	end
@@ -3228,6 +3267,7 @@ RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1
 	Safe(UpdateHover)
 	if ThemeName == "Rainbow" or ThemeName == "Astral" then Repaint() end
 	Safe(ui.AuroraStep)
+	Safe(ui.ScrollStep, dt)
 end)
 
 ----------------------------------------------------------------------
