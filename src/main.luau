@@ -231,6 +231,54 @@ do
 	end)
 end
 
+-- ---- mobile support -------------------------------------------------
+-- ui.Phone: a touch device without a keyboard (layout gets bigger touch targets and scrolling panels)
+ui.Phone = UIS.TouchEnabled and not UIS.KeyboardEnabled
+-- the movement stick, as x = right and y = forward (-1 to 1), for flying and freecam
+function ui.Controls()
+	if ui._ctl == nil then
+		local ok, c = pcall(function()
+			return require(LP:WaitForChild("PlayerScripts", 3):WaitForChild("PlayerModule", 3)):GetControls()
+		end)
+		ui._ctl = ok and c or false
+	end
+	return ui._ctl
+end
+function ui.MoveVec()
+	if not UIS.TouchEnabled then return Vector2.zero end
+	local c = ui.Controls()
+	if c then
+		local ok, v = pcall(function() return c:GetMoveVector() end)
+		if ok and v then return Vector2.new(v.X, -v.Z) end
+	end
+	local h = Hum()
+	if h and h.MoveDirection.Magnitude > 0 then
+		local cf = Camera.CFrame
+		local fwd = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+		if fwd.Magnitude > 0 then return Vector2.new(h.MoveDirection:Dot(cf.RightVector), h.MoveDirection:Dot(fwd.Unit)) end
+	end
+	return Vector2.zero
+end
+-- round hold-to-use button on the right edge of the screen; slot 0 is the lowest. Returns { held, btn }
+function ui.TouchBtn(text, slot)
+	local st = { held = false }
+	local b = New("TextButton", { Name = "ZenithTouch", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -24, 0.5, 38 - slot * 76), Size = UDim2.fromOffset(64, 64), BackgroundColor3 = C_HEAD, BackgroundTransparency = 0.15, Text = text, Font = FONT_B, TextSize = 13, TextColor3 = WHITE, AutoButtonColor = false, ZIndex = 30 }, ui.Gui)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, b)
+	local stroke = New("UIStroke", { Thickness = 2 }, b)
+	AddPainter(stroke, function() stroke.Color = Accent() end)
+	b.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then st.held = true end
+	end)
+	b.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then st.held = false end
+	end)
+	st.btn = b
+	return st
+end
+function ui.DropTouch(st) if st and st.btn then st.btn:Destroy() end end
+-- Left Ctrl on keyboard, or the DOWN button on a phone
+function ui.Lower(m) return Down(Enum.KeyCode.LeftControl) or (m._tDn ~= nil and m._tDn.held) end
+
 local function Module(def)
 	def.Enabled, def.Values, def._conns = false, {}, {}
 	def.BindMode = "Toggle"
@@ -326,7 +374,7 @@ local function FlyBuild(m, r)
 	m._ao = New("AlignOrientation", { Attachment0 = m._att, Mode = Enum.OrientationAlignmentMode.OneAttachment, RigidityEnabled = false, MaxTorque = math.huge, Responsiveness = 25, CFrame = CFrame.fromOrientation(0, m._yaw, 0) }, r)
 end
 
-Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space to go up and Shift or Ctrl to go down.",
+Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space to go up and Shift or Ctrl to go down. On mobile use the stick and the UP and DOWN buttons.",
 	Settings = {
 		Mode("Mode", { "Velocity", "CFrame" }, "Velocity", "Velocity flies with physics and feels smoother. CFrame moves you directly.", true),
 		Slider("Speed", 5, 400, 1, 70, "Horizontal flight speed."),
@@ -343,8 +391,10 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 			FlyBuild(m, r)
 		end
 		if h then h.PlatformStand = true end
+		if UIS.TouchEnabled then m._tUp, m._tDn = ui.TouchBtn("UP", 1), ui.TouchBtn("DOWN", 0) end
 	end,
 	OnDisable = function(m)
+		ui.DropTouch(m._tUp); ui.DropTouch(m._tDn); m._tUp, m._tDn = nil, nil
 		FlyClear(m)
 		local h, r = Hum(), Root()
 		if h then h.PlatformStand = false end
@@ -365,6 +415,10 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 		if Down(Enum.KeyCode.A) then dir -= cf.RightVector end
 		if Down(Enum.KeyCode.Space) then vert += 1 end
 		if Down(Enum.KeyCode.LeftShift) or Down(Enum.KeyCode.LeftControl) then vert -= 1 end
+		local mv = ui.MoveVec()
+		dir += cf.RightVector * mv.X + cf.LookVector * mv.Y
+		if m._tUp and m._tUp.held then vert += 1 end
+		if m._tDn and m._tDn.held then vert -= 1 end
 
 		-- ease toward the wanted velocity instead of snapping to it
 		local target = (dir.Magnitude > 0 and dir.Unit * V.Speed or Vector3.zero) + Vector3.new(0, vert * V.Vertical, 0)
@@ -410,18 +464,20 @@ local function VFlyBuild(m, root, seat)
 	CAS:BindActionAtPriority("ZenithVFlySink", function() return Enum.ContextActionResult.Sink end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
 end
 
-Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehicle you are sitting in with WASD, Space to go up and Shift or Ctrl to go down.",
+Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehicle you are sitting in with WASD, Space to go up and Shift or Ctrl to go down. On mobile use the stick and the UP and DOWN buttons.",
 	Settings = {
 		Slider("Speed", 5, 500, 1, 90, "Horizontal flight speed."),
 		Slider("Vertical", 5, 300, 1, 60, "Up and down speed."),
 		Slider("Smoothing", 1, 30, 1, 8, "How quickly you speed up and slow down. Higher is snappier."),
 		Toggle("Face Camera", true, "Turns the vehicle to face where the camera looks."),
 	},
-	OnEnable = function()
+	OnEnable = function(m)
 		local h = Hum()
 		if not (h and h.SeatPart) then ui.Notify("Sit in a seat or vehicle to use VehicleFly", false) end
+		if UIS.TouchEnabled then m._tUp, m._tDn = ui.TouchBtn("UP", 1), ui.TouchBtn("DOWN", 0) end
 	end,
 	OnDisable = function(m)
+		ui.DropTouch(m._tUp); ui.DropTouch(m._tDn); m._tUp, m._tDn = nil, nil
 		local root = m._root
 		VFlyClear(m)
 		if root then root.AssemblyLinearVelocity = Vector3.zero; root.AssemblyAngularVelocity = Vector3.zero end
@@ -445,6 +501,10 @@ Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehi
 		if Down(Enum.KeyCode.A) then dir -= cf.RightVector end
 		if Down(Enum.KeyCode.Space) then vert += 1 end
 		if Down(Enum.KeyCode.LeftShift) or Down(Enum.KeyCode.LeftControl) then vert -= 1 end
+		local mv = ui.MoveVec()
+		dir += cf.RightVector * mv.X + cf.LookVector * mv.Y
+		if m._tUp and m._tUp.held then vert += 1 end
+		if m._tDn and m._tDn.held then vert -= 1 end
 
 		local target = (dir.Magnitude > 0 and dir.Unit * V.Speed or Vector3.zero) + Vector3.new(0, vert * V.Vertical, 0)
 		m._vel = m._vel:Lerp(target, 1 - math.exp(-V.Smoothing * dt))
@@ -471,7 +531,7 @@ function ui.FeetY(r, h)
 	return r.Position.Y - legs - r.Size.Y / 2
 end
 
-Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin air without falling, with your normal walking animations. Jump to climb higher, hold Left Ctrl to lower the floor.",
+Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin air without falling, with your normal walking animations. Jump to climb higher, hold Left Ctrl (or the LOWER button on mobile) to lower the floor.",
 	Settings = {
 		Toggle("Jump Raises Floor", true, "When you jump, the invisible floor lifts to where your jump ends so you climb instead of dropping back down."),
 		Slider("Lower Speed", 5, 80, 1, 25, "How fast the floor drops while you hold Left Ctrl."),
@@ -483,8 +543,9 @@ Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin a
 			local v = r.AssemblyLinearVelocity
 			r.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
 		end
+		if UIS.TouchEnabled then m._tDn = ui.TouchBtn("LOWER", 0) end
 	end,
-	OnDisable = function() ui.DropPlatform("Air") end,
+	OnDisable = function(m) ui.DropTouch(m._tDn); m._tDn = nil; ui.DropPlatform("Air") end,
 	OnTick = function(m, dt)
 		local r, h = Root(), Hum(); if not r or not h then return end
 		local feet = ui.FeetY(r, h)
@@ -493,14 +554,14 @@ Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin a
 		end
 		local V = m.Values
 		local vel = r.AssemblyLinearVelocity
-		if Down(Enum.KeyCode.LeftControl) then
+		if ui.Lower(m) then
 			m._level -= V["Lower Speed"] * dt
 		elseif V["Jump Raises Floor"] and feet > m._level + 0.6 and vel.Y <= 1 then
 			-- you jumped and stopped rising: the floor moves up under your feet, so you land on it
 			m._level = feet - 0.05
 		end
 		-- pushed or teleported far below the floor: start over from where you are
-		if feet < m._level - 3 and not Down(Enum.KeyCode.LeftControl) then m._level = feet end
+		if feet < m._level - 3 and not ui.Lower(m) then m._level = feet end
 		local plat = ui.Plats.Air
 		if not plat or not plat.Parent then plat = ui.MakePlatform("ZenithAirWalk"); ui.Plats.Air = plat end
 		-- lead the platform slightly in the direction you move so fast movement never outruns it
@@ -510,10 +571,11 @@ Module{ Name = "AirWalk", Category = "Movement", Desc = "Lets you walk on thin a
 
 Module{ Name = "Jesus", Category = "Movement", Desc = "Lets you walk on top of water. Hold Left Ctrl to sink.",
 	Settings = { Slider("Swim Up Speed", 5, 60, 1, 20, "How fast you rise to the surface if you are already in the water.") },
-	OnDisable = function() ui.DropPlatform("Jesus") end,
+	OnEnable = function(m) if UIS.TouchEnabled then m._tDn = ui.TouchBtn("SINK", 0) end end,
+	OnDisable = function(m) ui.DropTouch(m._tDn); m._tDn = nil; ui.DropPlatform("Jesus") end,
 	OnTick = function(m)
 		local r, h = Root(), Hum(); if not r or not h then return end
-		local sinking = Down(Enum.KeyCode.LeftControl)
+		local sinking = ui.Lower(m)
 		local plat = ui.Plats.Jesus
 		local params = RayParams()
 		params.IgnoreWater = false
@@ -676,21 +738,50 @@ Module{ Name = "AntiFling", Category = "Player", Desc = "Stops other players fro
 		Slider("Threshold", 50, 1000, 10, 250, "Speed (studs per second) above which your movement counts as a fling. Raise it if it interferes with Fly or Dash."),
 	},
 	OnEnable = function(m)
-		m._safe, m._saveT = nil, 0
+		m._safe, m._saveT, m._hv = nil, 0, 0
+		-- every other player's body parts are listed once and kept up to date, so nothing is searched each frame
+		m._parts = {}
+		local function watch(p, c)
+			local list = {}
+			m._parts[p] = list
+			for _, d in ipairs(c:GetDescendants()) do if d:IsA("BasePart") then list[#list + 1] = d end end
+			Hook(m, c.DescendantAdded, function(d) if d:IsA("BasePart") then list[#list + 1] = d end end)
+		end
+		local function track(p)
+			if p == LP then return end
+			if p.Character then watch(p, p.Character) end
+			Hook(m, p.CharacterAdded, function(c) watch(p, c) end)
+		end
+		for _, p in ipairs(Players:GetPlayers()) do track(p) end
+		Hook(m, Players.PlayerAdded, track)
+		Hook(m, Players.PlayerRemoving, function(p) m._parts[p] = nil end)
 		-- before physics each frame: other players can no longer push you
 		Hook(m, RunService.Stepped, function()
-			local V = m.Values
-			if V["Ignore Players"] then
-				for _, p in ipairs(Players:GetPlayers()) do
-					local c = p ~= LP and p.Character
-					if c then
-						for _, part in ipairs(c:GetDescendants()) do
-							if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
-						end
-					end
+			if not m.Values["Ignore Players"] then return end
+			for _, list in pairs(m._parts) do
+				for i = #list, 1, -1 do
+					local part = list[i]
+					if part.Parent == nil then table.remove(list, i)
+					elseif part.CanCollide then part.CanCollide = false end
 				end
 			end
-			if V["Heavy Body"] then
+		end)
+		-- after physics: undo anything that still got through
+		Hook(m, RunService.Heartbeat, function()
+			local r = Root(); if not r then return end
+			local V = m.Values
+			local now = tick()
+			local lin, ang = r.AssemblyLinearVelocity, r.AssemblyAngularVelocity
+			if lin.Magnitude > V.Threshold or ang.Magnitude > 50 then
+				r.AssemblyLinearVelocity = Vector3.zero
+				r.AssemblyAngularVelocity = Vector3.zero
+				if V["Restore Position"] and m._safe then r.CFrame = m._safe end
+			elseif now - m._saveT > 0.1 then
+				m._safe, m._saveT = r.CFrame, now
+			end
+			-- density is only reapplied once a second (it also covers a fresh respawn)
+			if V["Heavy Body"] and now - m._hv > 1 then
+				m._hv = now
 				local c = LP.Character
 				if c then
 					for _, part in ipairs(c:GetChildren()) do
@@ -699,21 +790,9 @@ Module{ Name = "AntiFling", Category = "Player", Desc = "Stops other players fro
 				end
 			end
 		end)
-		-- after physics: undo anything that still got through
-		Hook(m, RunService.Heartbeat, function()
-			local r = Root(); if not r then return end
-			local V = m.Values
-			local lin, ang = r.AssemblyLinearVelocity, r.AssemblyAngularVelocity
-			if lin.Magnitude > V.Threshold or ang.Magnitude > 50 then
-				r.AssemblyLinearVelocity = Vector3.zero
-				r.AssemblyAngularVelocity = Vector3.zero
-				if V["Restore Position"] and m._safe then r.CFrame = m._safe end
-			elseif tick() - m._saveT > 0.1 then
-				m._safe, m._saveT = r.CFrame, tick()
-			end
-		end)
 	end,
 	OnDisable = function(m)
+		m._parts = nil
 		local c = LP.Character
 		if c then
 			for _, part in ipairs(c:GetChildren()) do
@@ -862,14 +941,18 @@ local FOVm = Module{ Name = "FOV", Category = "Render", Desc = "Changes your cam
 		Camera.FieldOfView = m.Values.FOV
 	end }
 
-Zoom = Module{ Name = "Zoom", Category = "Render", Desc = "Hold a key to zoom the camera in smoothly, release it to zoom back out.",
+Zoom = Module{ Name = "Zoom", Category = "Render", Desc = "Hold a key (or the ZOOM button on mobile) to zoom the camera in smoothly, release it to zoom back out.",
 	Settings = {
 		Mode("Key", { "C", "Z", "X", "V" }, "C", "The key you hold to zoom."),
 		Slider("Zoom FOV", 10, 60, 1, 20, "Field of view while zoomed. Lower numbers zoom in more."),
 	},
-	OnDisable = function(m) m._active = false; Camera.FieldOfView = FOVm.Enabled and FOVm.Values.FOV or ui.Def.FOV end,
+	OnEnable = function(m) if UIS.TouchEnabled then m._tz = ui.TouchBtn("ZOOM", 3) end end,
+	OnDisable = function(m)
+		ui.DropTouch(m._tz); m._tz = nil
+		m._active = false; Camera.FieldOfView = FOVm.Enabled and FOVm.Values.FOV or ui.Def.FOV
+	end,
 	OnRender = function(m, dt)
-		local zooming = Down(Enum.KeyCode[m.Values.Key])
+		local zooming = Down(Enum.KeyCode[m.Values.Key]) or (m._tz ~= nil and m._tz.held)
 		local base = FOVm.Enabled and FOVm.Values.FOV or ui.Def.FOV
 		if zooming then m._active = true end
 		if not m._active then return end
@@ -1003,7 +1086,7 @@ Module{ Name = "CamDistance", Category = "Render", Desc = "Removes the limit on 
 	OnDisable = function(m) LP.CameraMaxZoomDistance, LP.CameraMinZoomDistance = ui.Def.MaxZoom or m._o[1], ui.Def.MinZoom or m._o[2] end,
 	OnTick = function(m) LP.CameraMaxZoomDistance, LP.CameraMinZoomDistance = m.Values["Max Zoom"], m.Values["Min Zoom"] end }
 
-Module{ Name = "Freecam", Category = "Render", Desc = "Detaches the camera so you can fly around and look without moving your character. WASD to move, Q and E for down and up, hold right mouse to look, Shift to go faster.",
+Module{ Name = "Freecam", Category = "Render", Desc = "Detaches the camera so you can fly around and look without moving your character. WASD to move, Q and E for down and up, hold right mouse to look, Shift to go faster. On mobile use the stick, the UP and DOWN buttons and drag the screen to look.",
 	Settings = {
 		Slider("Speed", 5, 300, 1, 50, "How fast the camera flies. Hold Shift for 3x."),
 		Toggle("Freeze Character", true, "Anchors your character in place while the camera is detached. Applies when you enable Freecam."),
@@ -1015,8 +1098,19 @@ Module{ Name = "Freecam", Category = "Render", Desc = "Detaches the camera so yo
 		local r = Root()
 		m._anch = nil
 		if r and m.Values["Freeze Character"] then m._anch = r.Anchored; r.Anchored = true end
+		if UIS.TouchEnabled then
+			m._tUp, m._tDn = ui.TouchBtn("UP", 1), ui.TouchBtn("DOWN", 0)
+			-- drag any free spot on the screen to look around
+			Hook(m, UIS.InputChanged, function(i, gp)
+				if i.UserInputType == Enum.UserInputType.Touch and not gp and not ui.MenuOpen then
+					m._yaw -= i.Delta.X * math.rad(0.3)
+					m._pitch = math.clamp(m._pitch - i.Delta.Y * math.rad(0.3), -1.5, 1.5)
+				end
+			end)
+		end
 	end,
 	OnDisable = function(m)
+		ui.DropTouch(m._tUp); ui.DropTouch(m._tDn); m._tUp, m._tDn = nil, nil
 		Camera.CameraType = Enum.CameraType.Custom
 		UIS.MouseBehavior = Enum.MouseBehavior.Default
 		local r, h = Root(), Hum()
@@ -1043,6 +1137,10 @@ Module{ Name = "Freecam", Category = "Render", Desc = "Detaches the camera so yo
 		if Down(Enum.KeyCode.A) then dir -= rot.RightVector end
 		if Down(Enum.KeyCode.E) then dir += Vector3.yAxis end
 		if Down(Enum.KeyCode.Q) then dir -= Vector3.yAxis end
+		local mv = ui.MoveVec()
+		dir += rot.RightVector * mv.X + rot.LookVector * mv.Y
+		if m._tUp and m._tUp.held then dir += Vector3.yAxis end
+		if m._tDn and m._tDn.held then dir -= Vector3.yAxis end
 		local sp = m.Values.Speed * (Down(Enum.KeyCode.LeftShift) and 3 or 1)
 		if dir.Magnitude > 0 then m._pos += dir.Unit * sp * dt end
 		Camera.CameraType = Enum.CameraType.Scriptable
@@ -1063,7 +1161,7 @@ end
 -- where you are aiming on screen, in raw screen space. While the mouse is locked this is the engine's own
 -- crosshair position, otherwise it is your cursor. "Center" forces the middle of the viewport.
 local function AimPoint(follow)
-	if follow == "Center" then return Camera.ViewportSize / 2 end
+	if follow == "Center" or ui.Phone then return Camera.ViewportSize / 2 end
 	return UIS:GetMouseLocation()
 end
 
@@ -1077,6 +1175,12 @@ end
 
 local function Held(mode)
 	if mode == "Always" then return true end
+	if UIS.TouchEnabled then
+		-- no right mouse button on a phone: a shared AIM button stands in for it
+		if not ui.AimBtn then ui.AimBtn = ui.TouchBtn("AIM", 4) end
+		ui.AimBtn.btn.Visible = true
+		if ui.AimBtn.held then return true end
+	end
 	local b = mode == "Hold Left Mouse" and Enum.UserInputType.MouseButton1 or Enum.UserInputType.MouseButton2
 	return UIS:IsMouseButtonPressed(b)
 end
@@ -1318,10 +1422,63 @@ Module{ Name = "Aimbot", Category = "Combat", Desc = "Locks your camera onto the
 	end }
 
 -- triggerbot --------------------------------------------------------
-Module{ Name = "Triggerbot", Category = "Combat", Desc = "Uses your equipped tool automatically while your aim is over a player.",
+-- simulated left click: used by the Autoclicker and the Triggerbot
+function ui.Click()
+	if ui.MenuOpen then return end
+	local touchOnly = UIS.TouchEnabled and not UIS.MouseEnabled
+	local ch = LP.Character
+	local tool = ch and ch:FindFirstChildOfClass("Tool")
+	-- on a phone a held tool is used directly, since there is no cursor to click with
+	if touchOnly and tool then tool:Activate() return end
+	if ui.VIM == nil then
+		local ok, v = pcall(function() return game:GetService("VirtualInputManager") end)
+		ui.VIM = ok and v or false
+	end
+	local pos = touchOnly and Camera.ViewportSize / 2 or UIS:GetMouseLocation()
+	if ui.VIM then
+		local ok = pcall(function()
+			ui.VIM:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
+			ui.VIM:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
+		end)
+		if ok then return end
+	end
+	if type(mouse1click) == "function" then pcall(mouse1click) return end
+	if tool then tool:Activate() end
+end
+
+Module{ Name = "Autoclicker", Category = "Combat", Desc = "Clicks left mouse button over and over while you hold right click. On mobile, hold the on-screen CLICK button.",
 	Settings = {
-		Slider("Delay", 0, 500, 10, 60, "Milliseconds your aim must stay on a player before the tool fires."),
-		Slider("Cooldown", 50, 1000, 10, 150, "Minimum milliseconds between uses."),
+		Slider("CPS", 1, 30, 1, 10, "Clicks per second."),
+		Mode("Activate", { "Hold Right Click", "Always" }, "Hold Right Click", "Hold Right Click clicks only while you hold the right mouse button or the mobile button. Always clicks the whole time it is on."),
+		Toggle("Mobile Button", true, "Shows a CLICK button on touch devices. Hold it to autoclick."),
+	},
+	OnEnable = function(m)
+		m._acc = 0
+		if UIS.TouchEnabled and m.Values["Mobile Button"] then m._tc = ui.TouchBtn("CLICK", 2) end
+	end,
+	OnDisable = function(m)
+		ui.DropTouch(m._tc); m._tc = nil
+	end,
+	OnTick = function(m, dt)
+		local V = m.Values
+		local active = V.Activate == "Always" or (m._tc ~= nil and m._tc.held) or UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+		if not active or ui.MenuOpen or Typing() then m._acc = 0 return end
+		m._acc += dt * V.CPS
+		local n = 0
+		while m._acc >= 1 and n < 5 do
+			ui.Click()
+			m._acc -= 1
+			n += 1
+		end
+		if m._acc > 5 then m._acc = 0 end
+	end }
+
+Module{ Name = "Triggerbot", Category = "Combat", Desc = "Automatically uses your tool or clicks while your aim is over a player.",
+	Settings = {
+		Mode("Action", { "Use Tool", "Left Click" }, "Use Tool", "Use Tool activates your equipped tool. Left Click simulates a left mouse click, so it works without a tool."),
+		Slider("Delay", 0, 500, 10, 60, "Milliseconds your aim must stay on a player before it fires."),
+		Slider("Cooldown", 50, 1000, 10, 150, "Minimum milliseconds between tool uses. Only used by Use Tool."),
+		Slider("Click CPS", 1, 30, 1, 10, "Clicks per second while aiming at a player. Only used by Left Click."),
 		Slider("Max Distance", 20, 2000, 10, 300, D_DIST),
 		Toggle("Team Check", true, D_TEAM),
 	},
@@ -1330,7 +1487,8 @@ Module{ Name = "Triggerbot", Category = "Combat", Desc = "Uses your equipped too
 		local V = m.Values
 		local ch = LP.Character
 		local tool = ch and ch:FindFirstChildOfClass("Tool")
-		if ui.MenuOpen or Typing() or not tool then m._since = nil return end
+		local clicking = V.Action == "Left Click"
+		if ui.MenuOpen or Typing() or (not clicking and not tool) then m._since = nil return end
 		local c = AimPoint("Auto")
 		local ray = Camera:ViewportPointToRay(c.X, c.Y)
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * V["Max Distance"], RayParams())
@@ -1339,9 +1497,10 @@ Module{ Name = "Triggerbot", Category = "Combat", Desc = "Uses your equipped too
 		local hum = model and model:FindFirstChildOfClass("Humanoid")
 		if p and p ~= LP and hum and hum.Health > 0 and not (V["Team Check"] and p.Team and p.Team == LP.Team) then
 			m._since = m._since or tick()
-			if (tick() - m._since) * 1000 >= V.Delay and (tick() - (m._last or 0)) * 1000 >= V.Cooldown then
+			local gap = clicking and 1000 / V["Click CPS"] or V.Cooldown
+			if (tick() - m._since) * 1000 >= V.Delay and (tick() - (m._last or 0)) * 1000 >= gap then
 				m._last = tick()
-				tool:Activate()
+				if clicking then ui.Click() else tool:Activate() end
 			end
 		else
 			m._since = nil
@@ -1462,7 +1621,7 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 		Toggle("Background Blur", true, "Blurs the game behind the menu while it is open."),
 		Toggle("Background Dim", true, "Darkens the game behind the menu while it is open."),
 		Toggle("Descriptions", true, "Shows a short description of whatever you hover over. Turn off to hide them completely."),
-		Mode("Description Style", { "Cursor", "Bottom Bar" }, "Cursor", "Cursor shows a small tip next to your mouse. Bottom Bar pins it to the bottom of the screen."),
+		Mode("Description Style", { "Cursor", "Bottom Bar" }, ui.Phone and "Bottom Bar" or "Cursor", "Cursor shows a small tip next to your mouse. Bottom Bar pins it to the bottom of the screen."),
 		Toggle("High Slider Values", false, "Raises the maximum of speed, distance and size sliders far beyond their normal limits."),
 		Toggle("Keep Across Teleports", false, "Reloads Zenith with your current settings after a rejoin or teleport. Needs this script saved as Zenith.luau in your executor workspace."),
 		Toggle("Startup Logo", true, "Shows the Zenith logo for a moment when the client loads."),
@@ -1665,7 +1824,10 @@ function ui.CalDY()
 	end
 	return (ui.CalLo + ui.CalHi) / 2
 end
-function ui.MousePos()
+function ui.MousePos(i)
+	if i and i.UserInputType == Enum.UserInputType.Touch then ui.TouchPos = Vector2.new(i.Position.X, i.Position.Y) end
+	-- on a phone the "cursor" is the last touch; its position is already in GUI space
+	if ui.Phone and ui.TouchPos then return ui.TouchPos end
 	return UIS:GetMouseLocation() - Vector2.new(0, ui.CalDY())
 end
 
@@ -1927,7 +2089,7 @@ local function SetDesc(t) DescLabel.Text = t or ""; DescLabel.Visible = (t ~= ni
 
 -- tooltip style follows the cursor; bottom bar style stays pinned
 local function PlaceDesc()
-	if GuiSettings.Values["Description Style"] == "Bottom Bar" then
+	if ui.Phone or GuiSettings.Values["Description Style"] == "Bottom Bar" then
 		DescLabel.AnchorPoint = Vector2.new(0.5, 1)
 		DescLabel.Position = UDim2.new(0.5, 0, 1, -18)
 		return
@@ -2048,6 +2210,25 @@ end
 
 local Drag, PanelDrag, Listening
 local ROWH, SETH, PANEL_W, HEADER_H, GAP = 26, 24, 190, 30, 12
+if ui.Phone then ROWH, SETH, PANEL_W, HEADER_H = 32, 30, 210, 34 end
+
+-- a panel's list of modules; on a phone it scrolls once it would be taller than the screen
+function ui.MakeContent(panel)
+	if not ui.Phone then
+		local c = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2 }, panel)
+		New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, c)
+		return c
+	end
+	local c = New("ScrollingFrame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, ScrollingDirection = Enum.ScrollingDirection.Y, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, LayoutOrder = 2 }, panel)
+	local lay = New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, c)
+	local function fit()
+		local maxH = math.max(120, ui.Gui.AbsoluteSize.Y * 0.7 - HEADER_H)
+		c.Size = UDim2.new(1, 0, 0, math.min(lay.AbsoluteContentSize.Y, maxH))
+	end
+	lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(fit)
+	fit()
+	return c
+end
 
 local function changed(m, name)
 	if m.OnChanged then Safe(m.OnChanged, m, name) end
@@ -2133,15 +2314,15 @@ local function BarFromMouse(x)
 	PickerApply(true)
 end
 WheelHit.InputBegan:Connect(function(i)
-	if i.UserInputType == Enum.UserInputType.MouseButton1 then
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 		Drag = WheelFromMouse
-		local ml = ui.MousePos(); WheelFromMouse(ml.X, ml.Y)
+		local ml = ui.MousePos(i); WheelFromMouse(ml.X, ml.Y)
 	end
 end)
 BarHit.InputBegan:Connect(function(i)
-	if i.UserInputType == Enum.UserInputType.MouseButton1 then
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 		Drag = function(x) BarFromMouse(x) end
-		BarFromMouse(ui.MousePos().X)
+		BarFromMouse(ui.MousePos(i).X)
 	end
 end)
 
@@ -2205,7 +2386,7 @@ local function SliderRow(m, s, parent, order)
 	row.InputBegan:Connect(function(i)
 		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 			Drag = function(x) setFromX(x) end
-			setFromX(ui.MousePos().X)
+			setFromX(ui.MousePos(i).X)
 		end
 	end)
 	return row
@@ -2379,9 +2560,21 @@ local function BuildModuleRow(m, parent, showCat, idx, zref)
 		paint()
 	end
 	btn.MouseButton1Click:Connect(function()
+		if m._longPressed then m._longPressed = false return end
 		if m.Passive then toggleExpand() else ToggleModule(m) end
 	end)
 	btn.MouseButton2Click:Connect(toggleExpand)
+	-- touch has no right click: press and hold a module to open its settings
+	btn.InputBegan:Connect(function(i)
+		if i.UserInputType ~= Enum.UserInputType.Touch then return end
+		local start = Vector2.new(i.Position.X, i.Position.Y)
+		task.delay(0.45, function()
+			if i.UserInputState == Enum.UserInputState.End or i.UserInputState == Enum.UserInputState.Cancel then return end
+			if (Vector2.new(i.Position.X, i.Position.Y) - start).Magnitude > 10 then return end
+			m._longPressed = true
+			toggleExpand()
+		end)
+	end)
 	return holder
 end
 
@@ -2404,18 +2597,18 @@ local function CreatePanel(cat, index)
 	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, header)
 	ui.StyleLine(line, index * 0.12, header)
 
-	local content = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2 }, panel)
-	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, content)
+	local content = ui.MakeContent(panel)
 	for i, m in ipairs(ByCat[cat]) do BuildModuleRow(m, content, false, i, panel) end
 
 	header.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 then
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 			ClosePicker()
 			ui.BeginDrag(panel, i)
 			Raise(panel)
 		end
 	end)
 	header.MouseButton2Click:Connect(function() content.Visible = not content.Visible end)
+	ui.TapCollapse(header, content)
 	ui.AddHover(header, function()
 		return ui.HoverText(cat, CatDesc[cat])
 	end, panel)
@@ -2471,8 +2664,7 @@ do
 	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, header)
 	ui.StyleLine(line, 0, header)
 
-	local content = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = 2 }, panel)
-	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, content)
+	local content = ui.MakeContent(panel)
 
 	local function Row(order, text)
 		local btn = New("TextButton", { Size = UDim2.new(1, 0, 0, ROWH), BackgroundColor3 = C_ROW, BackgroundTransparency = 0.05, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = order }, content)
@@ -2515,13 +2707,14 @@ do
 	ActionRow(n + 2, "Close All", "Closes every tab and leaves only the Hub.", function() for i = 1, n do SetTab(i, false) end end)
 
 	header.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 then
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 			ClosePicker()
 			ui.BeginDrag(panel, i)
 			Raise(panel)
 		end
 	end)
 	header.MouseButton2Click:Connect(function() content.Visible = not content.Visible end)
+	ui.TapCollapse(header, content)
 	ui.AddHover(header, function() return ui.HoverText("Hub", "Open and close the tabs you want to see.") end, panel)
 
 	HubPanel, HubContent = panel, content
@@ -2652,12 +2845,29 @@ end)
 ----------------------------------------------------------------------
 -- dragging (panels, HUD, sliders, color wheel)
 ----------------------------------------------------------------------
+-- no right click on touch: a quick tap on a panel header (no dragging) folds the panel up or down
+function ui.TapCollapse(header, content)
+	header.InputBegan:Connect(function(i)
+		if i.UserInputType ~= Enum.UserInputType.Touch then return end
+		local start, t0 = Vector2.new(i.Position.X, i.Position.Y), tick()
+		local c
+		c = i.Changed:Connect(function()
+			if i.UserInputState == Enum.UserInputState.End or i.UserInputState == Enum.UserInputState.Cancel then
+				c:Disconnect()
+				local moved = (Vector2.new(i.Position.X, i.Position.Y) - start).Magnitude
+				if moved < 8 and tick() - t0 < 0.35 then content.Visible = not content.Visible end
+			end
+		end)
+	end)
+end
+
 function ui.BeginDrag(frame, input, onEnd, clamp)
 	PanelDrag = { panel = frame, start = Vector2.new(input.Position.X, input.Position.Y), pos = frame.Position, onEnd = onEnd, clamp = clamp }
 end
 
 Conn(UIS.InputChanged, function(i)
 	if i.UserInputType ~= Enum.UserInputType.MouseMovement and i.UserInputType ~= Enum.UserInputType.Touch then return end
+	if i.UserInputType == Enum.UserInputType.Touch then ui.TouchPos = Vector2.new(i.Position.X, i.Position.Y) end
 	if Drag then
 		local ml = ui.MousePos()
 		Drag(ml.X, ml.Y)
@@ -2756,6 +2966,7 @@ end)
 ----------------------------------------------------------------------
 RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1, function(dt)
 	Camera = workspace.CurrentCamera
+	if ui.AimBtn then ui.AimBtn.btn.Visible = false end
 	for _, m in ipairs(Modules) do if m.Enabled and m.OnRender then Safe(m.OnRender, m, dt) end end
 	Safe(UpdateESP)
 	Safe(UpdateHover)
