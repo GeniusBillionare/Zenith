@@ -277,7 +277,8 @@ function ui.TouchBtn(text, slot)
 end
 function ui.DropTouch(st) if st and st.btn then st.btn:Destroy() end end
 -- Left Ctrl on keyboard, or the DOWN button on a phone
-function ui.Lower(m) return Down(Enum.KeyCode.LeftControl) or (m._tDn ~= nil and m._tDn.held) end
+function ui.Opt(name) return GuiSettings.Values[name] ~= false end
+function ui.Lower(m) return (ui.Opt("Ctrl To Lower") and Down(Enum.KeyCode.LeftControl)) or (m._tDn ~= nil and m._tDn.held) end
 
 local function Module(def)
 	def.Enabled, def.Values, def._conns = false, {}, {}
@@ -415,7 +416,7 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 		if Down(Enum.KeyCode.D) then dir += cf.RightVector end
 		if Down(Enum.KeyCode.A) then dir -= cf.RightVector end
 		if Down(Enum.KeyCode.Space) then vert += 1 end
-		if Down(Enum.KeyCode.LeftShift) or Down(Enum.KeyCode.LeftControl) then vert -= 1 end
+		if (ui.Opt("Shift To Descend") and Down(Enum.KeyCode.LeftShift)) or (ui.Opt("Ctrl To Lower") and Down(Enum.KeyCode.LeftControl)) then vert -= 1 end
 		local mv = ui.MoveVec()
 		dir += cf.RightVector * mv.X + cf.LookVector * mv.Y
 		if m._tUp and m._tUp.held then vert += 1 end
@@ -501,7 +502,7 @@ Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehi
 		if Down(Enum.KeyCode.D) then dir += cf.RightVector end
 		if Down(Enum.KeyCode.A) then dir -= cf.RightVector end
 		if Down(Enum.KeyCode.Space) then vert += 1 end
-		if Down(Enum.KeyCode.LeftShift) or Down(Enum.KeyCode.LeftControl) then vert -= 1 end
+		if (ui.Opt("Shift To Descend") and Down(Enum.KeyCode.LeftShift)) or (ui.Opt("Ctrl To Lower") and Down(Enum.KeyCode.LeftControl)) then vert -= 1 end
 		local mv = ui.MoveVec()
 		dir += cf.RightVector * mv.X + cf.LookVector * mv.Y
 		if m._tUp and m._tUp.held then vert += 1 end
@@ -596,6 +597,22 @@ Module{ Name = "Jesus", Category = "Movement", Desc = "Lets you walk on top of w
 		if not sinking and h:GetState() == Enum.HumanoidStateType.Swimming then
 			local v = r.AssemblyLinearVelocity
 			r.AssemblyLinearVelocity = Vector3.new(v.X, m.Values["Swim Up Speed"], v.Z)
+		end
+	end }
+
+Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
+	Settings = {
+		Mode("Mode", { "Lift", "Steer" }, "Lift", "Lift pushes you straight up while it is on. Steer flies you in the direction your camera is facing."),
+		Slider("Power", 5, 150, 1, 40, "How fast the jetpack moves you in studs per second."),
+	},
+	OnTick = function(m)
+		local r = Root(); if not r then return end
+		local V = m.Values
+		local v = r.AssemblyLinearVelocity
+		if V.Mode == "Lift" then
+			r.AssemblyLinearVelocity = Vector3.new(v.X, V.Power, v.Z)
+		else
+			r.AssemblyLinearVelocity = Camera.CFrame.LookVector * V.Power
 		end
 	end }
 
@@ -863,10 +880,67 @@ local Tracers = Module{ Name = "Tracers", Category = "Render", Desc = "Draws a l
 		Slider("Max Distance", 100, 5000, 50, 3000, D_DIST),
 	} }
 
+-- Through Walls chams: a copy of each player is drawn in a full-screen viewport that uses the same camera
+ui.Ghost = { items = {} }
+function ui.GhostClear()
+	local G = ui.Ghost
+	for p, it in pairs(G.items) do it.model:Destroy(); G.items[p] = nil end
+	if G.vf then G.vf:Destroy(); G.vf, G.cam = nil, nil end
+end
+function ui.GhostUpdate(m)
+	local G = ui.Ghost
+	if not G.vf then
+		G.vf = New("ViewportFrame", { Name = "ZenithGhost", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 2, Ambient = Color3.new(1, 1, 1), LightColor = Color3.new(1, 1, 1) }, ui.Gui)
+		G.cam = New("Camera", {}, G.vf)
+		G.vf.CurrentCamera = G.cam
+	end
+	G.cam.CFrame, G.cam.FieldOfView = Camera.CFrame, Camera.FieldOfView
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP then
+			local ch = p.Character
+			local root = ch and ch:FindFirstChild("HumanoidRootPart")
+			local it = G.items[p]
+			if ch and root and Pass(m, p, root) then
+				if not it or it.char ~= ch or not it.model.Parent then
+					if it then it.model:Destroy(); G.items[p] = nil end
+					local arch = ch.Archivable
+					ch.Archivable = true
+					local copy = ch:Clone()
+					ch.Archivable = arch
+					if copy then
+						local origs, clones, pairsList = ch:GetDescendants(), copy:GetDescendants(), {}
+						for i, o in ipairs(origs) do
+							local c = clones[i]
+							if c and o:IsA("BasePart") and c:IsA("BasePart") then
+								c.Anchored, c.CanCollide = true, false
+								table.insert(pairsList, { o, c })
+							end
+						end
+						for _, d in ipairs(clones) do
+							if d:IsA("BaseScript") or d:IsA("Humanoid") then d:Destroy() end
+						end
+						copy.Parent = G.vf
+						it = { char = ch, model = copy, parts = pairsList }
+						G.items[p] = it
+					end
+				end
+				if it then
+					for _, pr in ipairs(it.parts) do
+						if pr[1].Parent then pr[2].CFrame = pr[1].CFrame end
+					end
+				end
+			elseif it then
+				it.model:Destroy(); G.items[p] = nil
+			end
+		end
+	end
+end
+
 local ChamObjs = {}
 local function ClearChams() for _, h in pairs(ChamObjs) do h:Destroy() end table.clear(ChamObjs) end
 Module{ Name = "Chams", Category = "Render", Desc = "Highlights players with a glowing fill and outline that shows through walls.",
 	Settings = {
+		Mode("Style", { "Highlight", "Through Walls" }, "Highlight", "Highlight fills players with color. Through Walls redraws each player's real character on top of everything, so you see them as they look instead of a colored shape."),
 		Mode("Color", ColorModes, "Accent", D_COLOR),
 		Slider("Fill", 0, 1, 0.05, 0.6, "How strong the colored fill is. 0 shows only the outline."),
 		Toggle("Outline", true, "Draws a solid outline around each player."),
@@ -874,8 +948,14 @@ Module{ Name = "Chams", Category = "Render", Desc = "Highlights players with a g
 		Toggle("Team Check", false, D_TEAM),
 		Slider("Max Distance", 100, 5000, 50, 3000, D_DIST),
 	},
-	OnDisable = ClearChams,
+	OnDisable = function() ClearChams(); ui.GhostClear() end,
 	OnRender = function(m)
+		if m.Values.Style == "Through Walls" then
+			ClearChams()
+			ui.GhostUpdate(m)
+			return
+		end
+		ui.GhostClear()
 		for _, p in ipairs(Players:GetPlayers()) do
 			if p ~= LP then
 				local ch = p.Character
@@ -894,6 +974,49 @@ Module{ Name = "Chams", Category = "Render", Desc = "Highlights players with a g
 				elseif h then h:Destroy(); ChamObjs[p] = nil end
 			end
 		end
+	end }
+
+-- Xray: every world part turns see-through; the original transparency is remembered so it can be put back
+ui.Xray = {}
+function ui.XrayApply(level)
+	for part, orig in pairs(ui.Xray) do
+		if part.Parent then part.Transparency = math.max(orig, level) else ui.Xray[part] = nil end
+	end
+end
+local function XrayTake(d, level)
+	if d:IsA("BasePart") and d.ClassName ~= "Terrain" and not d:FindFirstAncestorOfClass("Model") then
+		ui.Xray[d] = d.Transparency
+		d.Transparency = math.max(d.Transparency, level)
+	elseif d:IsA("BasePart") and d.ClassName ~= "Terrain" then
+		local mdl = d:FindFirstAncestorOfClass("Model")
+		-- skip anything that belongs to a character
+		if not (mdl and mdl:FindFirstChildOfClass("Humanoid")) then
+			ui.Xray[d] = d.Transparency
+			d.Transparency = math.max(d.Transparency, level)
+		end
+	end
+end
+Module{ Name = "Xray", Category = "Render", Desc = "Makes the world see-through so you can see what is behind walls.",
+	Settings = { Slider("Transparency", 0.1, 0.95, 0.05, 0.6, "How see-through everything becomes. Parts that were already more see-through stay as they are.") },
+	OnChanged = function(m) ui.XrayApply(m.Values.Transparency) end,
+	OnEnable = function(m)
+		local level = m.Values.Transparency
+		task.spawn(function()
+			local n = 0
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if not m.Enabled then return end
+				XrayTake(d, m.Values.Transparency)
+				n += 1
+				if n % 400 == 0 then task.wait() end
+			end
+		end)
+		Hook(m, workspace.DescendantAdded, function(d) XrayTake(d, m.Values.Transparency) end)
+	end,
+	OnDisable = function(m)
+		for part, orig in pairs(ui.Xray) do
+			if part.Parent then part.Transparency = orig end
+		end
+		ui.Xray = {}
 	end }
 
 local LightOrig = {}
@@ -1626,6 +1749,7 @@ Module{ Name = "Keyboard", Category = "Utility", Desc = "Shows an on-screen keyb
 				ui.BeginDrag(frame, i)
 			end
 		end)
+		m._kbFrame = frame
 		local rows = {}
 		function m._build()
 			for _, r in ipairs(rows) do r:Destroy() end
@@ -1646,7 +1770,7 @@ Module{ Name = "Keyboard", Category = "Utility", Desc = "Shows an on-screen keyb
 				table.insert(rows, rf)
 				for ci, k in ipairs(row) do
 					local name, label, w = k[1], k[2] or k[1], k[3] or 1
-					local key = Enum.KeyCode[name]
+					local key = name ~= "@more" and Enum.KeyCode[name] or nil
 					if name == "@more" or key then
 						local b = New("TextButton", { Size = UDim2.fromOffset(math.floor(u * w + (w - 1) * 3 + 0.5), u), BackgroundColor3 = C_ROW, BackgroundTransparency = 1 - V.Opacity, BorderSizePixel = 0, AutoButtonColor = false, Text = label, Font = FONT_B, TextSize = math.max(9, math.floor(12 * V.Size)), TextColor3 = WHITE, LayoutOrder = ci, ZIndex = 42 }, rf)
 						New("UICorner", { CornerRadius = UDim.new(0, 4) }, b)
@@ -1657,6 +1781,8 @@ Module{ Name = "Keyboard", Category = "Utility", Desc = "Shows an on-screen keyb
 						else
 							b.InputBegan:Connect(function(i)
 								if i.UserInputType ~= Enum.UserInputType.Touch and i.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+								-- while a keybind is waiting for a key, the tapped key is the answer
+								if ui.TryBind and ui.TryBind(key) then paint() return end
 								if MODS[name] and V["Sticky Modifiers"] then
 									-- tap once to hold, tap again to let go
 									if m._down[key] then release(key) else m._down[key] = true; send(key, true) end
@@ -1759,6 +1885,8 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 		Mode("Description Style", { "Cursor", "Bottom Bar" }, ui.Phone and "Bottom Bar" or "Cursor", "Cursor shows a small tip next to your mouse. Bottom Bar pins it to the bottom of the screen."),
 		Toggle("High Slider Values", false, "Raises the maximum of speed, distance and size sliders far beyond their normal limits."),
 		Toggle("Keep Across Teleports", false, "Reloads Zenith with your current settings after a rejoin or teleport. Needs this script saved as Zenith.luau in your executor workspace."),
+		Toggle("Ctrl To Lower", true, "Left Ctrl lowers you in Fly, VehicleFly, AirWalk and Jesus. Turn off if Ctrl gets in the way."),
+		Toggle("Shift To Descend", true, "Left Shift makes you descend in Fly and VehicleFly. Turn off if Shift gets in the way."),
 		Toggle("Startup Logo", true, "Shows the Zenith logo for a moment when the client loads."),
 	},
 	OnChanged = function(m, name)
@@ -1803,7 +1931,7 @@ do
 		["Speed.Speed"] = 900, ["Fly.Speed"] = 1500, ["Fly.Vertical"] = 900, ["VehicleFly.Speed"] = 2000, ["VehicleFly.Vertical"] = 1200,
 		["InfiniteJump.Power"] = 500, ["HighJump.Power"] = 1500, ["Bhop.Boost"] = 150, ["Glide.Fall Speed"] = 200,
 		["Spider.Speed"] = 300, ["Gravity.Gravity"] = 1500, ["Dash.Power"] = 1000, ["Spinbot.Speed"] = 240, ["HipHeight.Height"] = 150,
-		["NoFall.Threshold"] = 400, ["AntiFling.Threshold"] = 5000, ["Follow.Distance"] = 200,
+		["Jetpack.Power"] = 600, ["NoFall.Threshold"] = 400, ["AntiFling.Threshold"] = 5000, ["Follow.Distance"] = 200,
 		["ESP.Max Distance"] = 20000, ["NameTags.Max Distance"] = 20000, ["Tracers.Max Distance"] = 20000, ["Chams.Max Distance"] = 20000,
 		["CamDistance.Max Zoom"] = 10000, ["Freecam.Speed"] = 1000,
 		["Hitbox Visualizer.Max Distance"] = 20000, ["Hitbox Expander.Size"] = 200, ["FOV Circle.Radius"] = 1500,
@@ -2235,9 +2363,6 @@ ui.RebuildList = RebuildArrayList
 local Menu = New("Frame", { Name = "Menu", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 10 }, Gui)
 ui.MenuFrame = Menu
 local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, Menu)
--- every panel lives in this frame, which the mouse wheel slides up and down
-ui.ScrollY, ui.ScrollTarget = 0, 0
-ui.Scroller = New("Frame", { Name = "Scroller", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 4 }, Menu)
 
 -- Astral theme: panel underlines become a drifting aurora gradient
 ui.Lines = {}
@@ -2798,7 +2923,7 @@ local function Raise(panel)
 end
 
 local function CreatePanel(cat, index)
-	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, ui.Scroller)
+	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, Menu)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -40, 1, -2), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2835,8 +2960,7 @@ local function HubRefresh() for _, f in ipairs(HubPaints) do f() end end
 -- panels can never leave the screen: the whole width and the header always stay visible
 function ui.ClampXY(x, y)
 	local vp = Vector2.new(math.min(ui.Gui.AbsoluteSize.X, Camera.ViewportSize.X), math.min(ui.Gui.AbsoluteSize.Y, Camera.ViewportSize.Y))
-	local top = -(ui.ScrollY or 0)
-	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, top, math.max(vp.Y - HEADER_H + top, top))
+	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, 0, math.max(vp.Y - HEADER_H, 0))
 end
 local function ClampPanel(p)
 	local x, y = ui.ClampXY(p.Position.X.Offset, p.Position.Y.Offset)
@@ -2866,7 +2990,7 @@ end
 ui.SetTab = SetTab
 
 do
-	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, ui.Scroller)
+	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, Menu)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -60, 1, -2), BackgroundTransparency = 1, Text = "Hub", Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2933,8 +3057,6 @@ end
 
 function ui.ResetPanels()
 	ClosePicker()
-	ui.ScrollY, ui.ScrollTarget = 0, 0
-	ui.Scroller.Position = UDim2.new()
 	local vp = Camera.ViewportSize
 	if vp.X < 400 then vp = Vector2.new(1280, 720) end
 	local cols = #PanelFrames + 1
@@ -3150,27 +3272,6 @@ Conn(UIS.InputChanged, function(i)
 		PanelDrag.panel.Position = UDim2.fromOffset(nx, ny)
 	end
 end)
--- how far the menu can scroll: until the lowest open panel's bottom edge is on screen
-function ui.ScrollLimit()
-	local bottom = 0
-	local function chk(p) if p and p.Visible then bottom = math.max(bottom, p.Position.Y.Offset + p.AbsoluteSize.Y) end end
-	chk(HubPanel)
-	for _, p in ipairs(PanelFrames) do chk(p) end
-	return math.max(0, bottom - ui.Gui.AbsoluteSize.Y + 40)
-end
-Conn(UIS.InputChanged, function(i)
-	if i.UserInputType ~= Enum.UserInputType.MouseWheel or not ui.MenuOpen or ui.Phone then return end
-	if Typing() then return end
-	if Picker.Visible then ClosePicker() end
-	ui.ScrollTarget = math.clamp(ui.ScrollTarget + i.Position.Z * 70, -ui.ScrollLimit(), 0)
-end)
-function ui.ScrollStep(dt)
-	if ui.MenuOpen then ui.ScrollTarget = math.clamp(ui.ScrollTarget, -ui.ScrollLimit(), 0) end
-	if ui.ScrollY == ui.ScrollTarget then return end
-	ui.ScrollY += (ui.ScrollTarget - ui.ScrollY) * math.min(1, dt * 14)
-	if math.abs(ui.ScrollTarget - ui.ScrollY) < 0.5 then ui.ScrollY = ui.ScrollTarget end
-	ui.Scroller.Position = UDim2.fromOffset(0, ui.ScrollY)
-end
 Conn(UIS.InputEnded, function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 		if PanelDrag and PanelDrag.onEnd then Safe(PanelDrag.onEnd) end
@@ -3221,15 +3322,18 @@ ui.SetMenu = SetMenu
 ----------------------------------------------------------------------
 -- keybinds
 ----------------------------------------------------------------------
+-- true when a keybind row was waiting for a key and this key was given to it
+function ui.TryBind(key)
+	if not Listening then return false end
+	local m = Listening.m; Listening = nil
+	if key == Enum.KeyCode.Escape or key == Enum.KeyCode.Backspace then m.Bind = nil else m.Bind = key end
+	Repaint(m)
+	return true
+end
 Conn(UIS.InputBegan, function(input, gp)
 	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
 	local key = input.KeyCode
-	if Listening then
-		local m = Listening.m; Listening = nil
-		if key == Enum.KeyCode.Escape or key == Enum.KeyCode.Backspace then m.Bind = nil else m.Bind = key end
-		Repaint(m)
-		return
-	end
+	if ui.TryBind(key) then return end
 	if key == MenuKey() then
 		if not Typing() then SetMenu(not ui.MenuOpen) end
 		return
@@ -3267,7 +3371,6 @@ RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1
 	Safe(UpdateHover)
 	if ThemeName == "Rainbow" or ThemeName == "Astral" then Repaint() end
 	Safe(ui.AuroraStep)
-	Safe(ui.ScrollStep, dt)
 end)
 
 ----------------------------------------------------------------------
