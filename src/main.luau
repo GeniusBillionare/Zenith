@@ -24,11 +24,19 @@ local Camera = workspace.CurrentCamera
 local Mouse  = LP:GetMouse()
 local PG     = LP:WaitForChild("PlayerGui")
 
+do
 local oldGui = PG:FindFirstChild("ZenithClient"); if oldGui then oldGui:Destroy() end
+end
+do
 local oldGui2 = PG:FindFirstChild("AerovoltClient"); if oldGui2 then oldGui2:Destroy() end
+end
+do
 local oldBlur2 = Lighting:FindFirstChild("AerovoltBlur"); if oldBlur2 then oldBlur2:Destroy() end
+end
 pcall(function() RunService:UnbindFromRenderStep("AerovoltRender") end)
+do
 local oldBlur = Lighting:FindFirstChild("ZenithBlur"); if oldBlur then oldBlur:Destroy() end
+end
 pcall(function() RunService:UnbindFromRenderStep("ZenithRender") end)
 
 local CLIENT, VERSION = "ZENITH", "v3.0"
@@ -363,6 +371,7 @@ Module{ Name = "Speed", Category = "Movement", Desc = "Run faster than normal. P
 		end
 	end }
 
+do
 local function FlyClear(m)
 	for _, k in ipairs({ "_lv", "_ao", "_att" }) do
 		if m[k] then m[k]:Destroy(); m[k] = nil end
@@ -442,8 +451,10 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 			m._lv.VectorVelocity = m._vel
 		end
 	end }
+end
 
 local CAS = game:GetService("ContextActionService")
+do
 local function VFlyClear(m)
 	for _, k in ipairs({ "_lv", "_ao", "_att" }) do
 		if m[k] then m[k]:Destroy(); m[k] = nil end
@@ -516,6 +527,7 @@ Module{ Name = "VehicleFly", Category = "Movement", Desc = "Fly the seat or vehi
 		m._ao.CFrame = CFrame.fromOrientation(0, m._yaw, 0) * m._rel:Inverse()
 		m._lv.VectorVelocity = m._vel
 	end }
+end
 
 -- AirWalk and Jesus put an invisible floor under your feet (only on your client), so you stand on it
 -- and the normal idle / walking animations play instead of the falling one.
@@ -937,7 +949,156 @@ function ui.GhostUpdate(m)
 end
 
 local ChamObjs = {}
+do
 local function ClearChams() for _, h in pairs(ChamObjs) do h:Destroy() end table.clear(ChamObjs) end
+-- TabGUI: the classic hacked-client side menu. Up/Down move, Right or Enter goes deeper or switches a module,
+-- Left or Backspace goes back. Mouse and touch work too. It takes over the arrow keys while it is on.
+Module{ Name = "TabGUI", Category = "Render", Desc = "A small menu under the Roblox buttons you can drive with the arrow keys or clicks, to switch modules and change settings without opening the full menu.",
+	OnEnable = function(m)
+		m._lvl, m._ci, m._mi, m._si = 1, 1, 1, 1
+		local W, H = 124, 22
+		local root = New("Frame", { Name = "ZenithTabGui", Position = UDim2.fromOffset(12, 64), Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, ZIndex = 20 }, ui.Gui)
+		New("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) }, root)
+		m._root = root
+		local rows = {}
+		local function curMods() return ByCat[Categories[m._ci]] or {} end
+		local function curSets()
+			local mod = curMods()[m._mi]
+			return mod and mod.Settings or {}
+		end
+		local function valText(mod, st)
+			local v = mod.Values[st.Name]
+			if st.Type == "Toggle" then return v and "on" or "off" end
+			if st.Type == "Slider" then return tostring(math.floor(v * 100 + 0.5) / 100) end
+			if st.Type == "Mode" then return tostring(v) end
+			if st.Type == "Button" then return "run" end
+			return ""
+		end
+		local function column(order, padRows, width)
+			local holder = New("Frame", { Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, LayoutOrder = order }, root)
+			New("UIPadding", { PaddingTop = UDim.new(0, padRows * H) }, holder)
+			local col = New("Frame", { Size = UDim2.fromOffset(width, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C_HEAD, BackgroundTransparency = 0.12, BorderSizePixel = 0 }, holder)
+			New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, col)
+			return col
+		end
+		local function row(col, level, i, text)
+			local b = New("TextButton", { Size = UDim2.new(1, 0, 0, H), BackgroundTransparency = 1, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = i }, col)
+			local bar = New("Frame", { Size = UDim2.new(0, 3, 1, 0), BorderSizePixel = 0, Visible = false }, b)
+			local l = New("TextLabel", { Position = UDim2.fromOffset(9, 0), Size = UDim2.new(1, -60, 1, 0), BackgroundTransparency = 1, Text = text, Font = FONT, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left }, b)
+			local r = New("TextLabel", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -6, 0, 0), Size = UDim2.fromOffset(54, H), BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = C_DIM }, b)
+			local rec = { b = b, bar = bar, l = l, r = r, col = level, i = i }
+			table.insert(rows, rec)
+			return rec
+		end
+		local function adjust(mod, st, dir)
+			local v = mod.Values[st.Name]
+			if st.Type == "Button" then Safe(st.Fn, mod) return end
+			if st.Type == "Toggle" then mod.Values[st.Name] = not v
+			elseif st.Type == "Slider" then mod.Values[st.Name] = tonumber(string.format("%.4f", math.clamp(v + dir * st.Step, st.Min, ui.MaxOf(st))))
+			elseif st.Type == "Mode" then
+				local o = type(st.Options) == "function" and st.Options() or st.Options
+				local idx = table.find(o, v) or 0
+				mod.Values[st.Name] = o[((idx - 1 + dir) % #o) + 1]
+			else return end
+			if mod.OnChanged then Safe(mod.OnChanged, mod, st.Name) end
+			ui.RebuildList(); ui.RefreshSliders(); Repaint()
+		end
+		function m._color()
+			local acc = Accent()
+			for _, rec in ipairs(rows) do
+				local sel = (rec.col == 1 and rec.i == m._ci) or (rec.col == 2 and rec.i == m._mi) or (rec.col == 3 and rec.i == m._si)
+				local active = rec.col == m._lvl
+				rec.b.BackgroundTransparency = sel and 0.15 or 1
+				rec.b.BackgroundColor3 = acc:Lerp(Color3.new(0, 0, 0), active and 0.5 or 0.78)
+				rec.bar.Visible = sel and active
+				rec.bar.BackgroundColor3 = acc
+				local on = rec.mod and rec.mod.Enabled and not rec.mod.Action and not rec.mod.Passive
+				rec.l.TextColor3 = (sel and active) and WHITE or (on and acc or C_LIGHT)
+				if rec.st then rec.r.Text = valText(rec.mod, rec.st) end
+			end
+		end
+		function m._build()
+			for _, c in ipairs(root:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+			rows = {}
+			local c1 = column(1, 0, W)
+			for i, cat in ipairs(Categories) do
+				local rec = row(c1, 1, i, cat)
+				rec.b.MouseButton1Click:Connect(function() m._ci, m._mi, m._lvl = i, 1, 2; m._build() end)
+			end
+			if m._lvl >= 2 then
+				local mods = curMods()
+				local c2 = column(2, m._ci - 1, W + 8)
+				for i, mod in ipairs(mods) do
+					local rec = row(c2, 2, i, mod.Name)
+					rec.mod = mod
+					rec.b.MouseButton1Click:Connect(function() m._mi, m._lvl = i, 2; if mod.Passive then m._lvl, m._si = 3, 1 else ToggleModule(mod) end m._build() end)
+					if mod.Settings and #mod.Settings > 0 then
+						rec.r.Text = ">"
+						local a = New("TextButton", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(26, H), BackgroundTransparency = 1, Text = "", AutoButtonColor = false }, rec.b)
+						a.MouseButton1Click:Connect(function() m._mi, m._lvl, m._si = i, 3, 1; m._build() end)
+					end
+				end
+			end
+			if m._lvl >= 3 then
+				local mod = curMods()[m._mi]
+				if mod then
+					local c3 = column(3, (m._ci - 1) + (m._mi - 1), W + 64)
+					for i, st in ipairs(mod.Settings or {}) do
+						local rec = row(c3, 3, i, st.Name)
+						rec.mod, rec.st = mod, st
+						rec.b.MouseButton1Click:Connect(function() m._si, m._lvl = i, 3; adjust(mod, st, 1); m._build() end)
+						rec.b.MouseButton2Click:Connect(function() m._si, m._lvl = i, 3; adjust(mod, st, -1); m._build() end)
+					end
+				end
+			end
+			m._color()
+		end
+		local function wrap(v, n) return n > 0 and ((v - 1) % n) + 1 or 1 end
+		function m._key(key)
+			local K = Enum.KeyCode
+			local mods = curMods()
+			if m._lvl == 1 then
+				if key == K.Up then m._ci = wrap(m._ci - 1, #Categories); m._mi = 1
+				elseif key == K.Down then m._ci = wrap(m._ci + 1, #Categories); m._mi = 1
+				elseif key == K.Right or key == K.Return then if #mods > 0 then m._lvl = 2 end end
+			elseif m._lvl == 2 then
+				local mod = mods[m._mi]
+				if key == K.Up then m._mi = wrap(m._mi - 1, #mods)
+				elseif key == K.Down then m._mi = wrap(m._mi + 1, #mods)
+				elseif key == K.Left or key == K.Backspace then m._lvl = 1
+				elseif key == K.Return and mod then if mod.Passive then m._lvl, m._si = 3, 1 else ToggleModule(mod) end
+				elseif key == K.Right and mod then
+					if mod.Settings and #mod.Settings > 0 then m._lvl, m._si = 3, 1 elseif not mod.Passive then ToggleModule(mod) end
+				end
+			else
+				local mod, sets = mods[m._mi], curSets()
+				local st = sets[m._si]
+				if key == K.Up then m._si = wrap(m._si - 1, #sets)
+				elseif key == K.Down then m._si = wrap(m._si + 1, #sets)
+				elseif key == K.Backspace then m._lvl = 2
+				elseif key == K.Return and st then adjust(mod, st, 1)
+				elseif key == K.Right and st then adjust(mod, st, 1)
+				elseif key == K.Left and st then
+					if st.Type == "Slider" or st.Type == "Mode" then adjust(mod, st, -1) else m._lvl = 2 end
+				end
+			end
+			m._build()
+		end
+		AddPainter(root, function() if m._color then m._color() end end)
+		m._build()
+		-- the arrow keys belong to this menu while it is on
+		game:GetService("ContextActionService"):BindActionAtPriority("ZenithTabGui", function(_, state, input)
+			if UIS:GetFocusedTextBox() then return Enum.ContextActionResult.Pass end
+			if state == Enum.UserInputState.Begin then m._key(input.KeyCode) end
+			return Enum.ContextActionResult.Sink
+		end, false, Enum.ContextActionPriority.High.Value + 10, Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right, Enum.KeyCode.Return, Enum.KeyCode.Backspace)
+	end,
+	OnDisable = function(m)
+		pcall(function() game:GetService("ContextActionService"):UnbindAction("ZenithTabGui") end)
+		if m._root then m._root:Destroy(); m._root = nil end
+		m._build, m._color, m._key = nil, nil, nil
+	end }
+
 Module{ Name = "Chams", Category = "Render", Desc = "Highlights players with a glowing fill and outline that shows through walls.",
 	Settings = {
 		Mode("Style", { "Highlight", "Through Walls" }, "Highlight", "Highlight fills players with color. Through Walls redraws each player's real character on top of everything, so you see them as they look instead of a colored shape."),
@@ -975,6 +1136,7 @@ Module{ Name = "Chams", Category = "Render", Desc = "Highlights players with a g
 			end
 		end
 	end }
+end
 
 -- Xray: every world part turns see-through; the original transparency is remembered so it can be put back
 ui.Xray = {}
@@ -983,6 +1145,7 @@ function ui.XrayApply(level)
 		if part.Parent then part.Transparency = math.max(orig, level) else ui.Xray[part] = nil end
 	end
 end
+do
 local function XrayTake(d, level)
 	if d:IsA("BasePart") and d.ClassName ~= "Terrain" and not d:FindFirstAncestorOfClass("Model") then
 		ui.Xray[d] = d.Transparency
@@ -1018,7 +1181,9 @@ Module{ Name = "Xray", Category = "Render", Desc = "Makes the world see-through 
 		end
 		ui.Xray = {}
 	end }
+end
 
+do
 local LightOrig = {}
 Module{ Name = "Fullbright", Category = "Render", Desc = "Makes everything fully lit and removes shadows so dark areas are easy to see.",
 	OnEnable = function()
@@ -1033,6 +1198,7 @@ Module{ Name = "Fullbright", Category = "Render", Desc = "Makes everything fully
 		Lighting.Brightness, Lighting.ClockTime, Lighting.GlobalShadows = 2, 14, false
 		Lighting.Ambient, Lighting.OutdoorAmbient = Color3.fromRGB(190, 190, 190), Color3.fromRGB(190, 190, 190)
 	end }
+end
 
 Module{ Name = "NoFog", Category = "Render", Desc = "Removes fog and atmospheric haze for a clear view into the distance.",
 	OnEnable = function(m)
@@ -1057,6 +1223,7 @@ Module{ Name = "TimeChanger", Category = "Render", Desc = "Locks the time of day
 	OnTick = function(m) Lighting.ClockTime = m.Values.Time end }
 
 local Zoom
+do
 local FOVm = Module{ Name = "FOV", Category = "Render", Desc = "Changes your camera's field of view. Higher values show more of the world.",
 	Settings = { Slider("FOV", 30, 120, 1, 90, "Field of view in degrees. Roblox's default is 70.") },
 	OnDisable = function() Camera.FieldOfView = ui.Def.FOV end,
@@ -1084,7 +1251,9 @@ Zoom = Module{ Name = "Zoom", Category = "Render", Desc = "Hold a key (or the ZO
 		Camera.FieldOfView += (target - Camera.FieldOfView) * math.min(1, dt * 12)
 		if not zooming and math.abs(Camera.FieldOfView - base) < 0.2 then Camera.FieldOfView = base; m._active = false end
 	end }
+end
 
+do
 local CrossFrames
 Module{ Name = "Crosshair", Category = "Render", Desc = "Draws a custom crosshair in the center of your screen.",
 	Settings = {
@@ -1112,6 +1281,7 @@ Module{ Name = "Crosshair", Category = "Render", Desc = "Draws a custom crosshai
 		F.Dot.AnchorPoint, F.Dot.Size, F.Dot.Visible = Vector2.new(0.5, 0.5), UDim2.fromOffset(t, t), m.Values["Center Dot"]
 		for _, n in ipairs({ "Up", "Down", "Left", "Right", "Dot" }) do F[n].BackgroundColor3 = c end
 	end }
+end
 
 local fpsAvg = 60
 local function GetPing()
@@ -1384,6 +1554,7 @@ local function AimCamera(pos, alpha, maxStep)
 end
 
 -- hitbox visualizer -------------------------------------------------
+do
 local VizObjs = {}
 local function VizClear() for _, a in pairs(VizObjs) do a:Destroy() end table.clear(VizObjs) end
 Module{ Name = "Hitbox Visualizer", Category = "Combat", Desc = "Draws a box around each player's real hitbox so you can see how big it is.",
@@ -1429,8 +1600,10 @@ Module{ Name = "Hitbox Visualizer", Category = "Combat", Desc = "Draws a box aro
 			if not wanted[part] then a:Destroy(); VizObjs[part] = nil end
 		end
 	end }
+end
 
 -- hitbox expander ---------------------------------------------------
+do
 local HB = {}
 local function HBRestorePart(part)
 	local o = HB[part]
@@ -1472,6 +1645,7 @@ Module{ Name = "Hitbox Expander", Category = "Combat", Desc = "Makes other playe
 			if not wanted[part] then HBRestorePart(part) end
 		end
 	end }
+end
 
 -- fov circle --------------------------------------------------------
 FOVc = Module{ Name = "FOV Circle", Category = "Combat", Desc = "Draws a circle on screen. Aim Assist and Aimbot only target players inside it.",
@@ -1634,6 +1808,7 @@ Module{ Name = "Triggerbot", Category = "Combat", Desc = "Automatically uses you
 ----------------------------------------------------------------------
 -- UTILITY
 ----------------------------------------------------------------------
+do
 local Waypoint
 Module{ Name = "ClickTP", Category = "Utility", Desc = "Teleports you to wherever you click in the world.",
 	Settings = { Mode("Mode", { "Ctrl+Click", "Click" }, "Ctrl+Click", "Ctrl+Click needs Left Ctrl held while clicking. Click teleports on every single click.") },
@@ -1683,6 +1858,7 @@ Module{ Name = "Go To Waypoint", Category = "Utility", Desc = "Teleports you to 
 		local r = Root()
 		if r and Waypoint then r.CFrame = Waypoint; ui.Notify("Teleported to waypoint", true) else ui.Notify("No waypoint set", false) end
 	end }
+end
 Module{ Name = "TP To Spawn", Category = "Utility", Desc = "Teleports you to the first spawn point in the map.",
 	Action = function()
 		local s, r = workspace:FindFirstChildWhichIsA("SpawnLocation", true), Root()
@@ -2242,6 +2418,7 @@ end
 ----------------------------------------------------------------------
 -- notifications (bottom right)
 ----------------------------------------------------------------------
+do
 local NotifHolder = New("Frame", { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(240, 320), BackgroundTransparency = 1, ZIndex = 50 }, Gui)
 New("UIListLayout", { VerticalAlignment = Enum.VerticalAlignment.Bottom, HorizontalAlignment = Enum.HorizontalAlignment.Right, Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }, NotifHolder)
 local notifCount = 0
@@ -2261,6 +2438,7 @@ function ui.Notify(text, good)
 			f:Destroy()
 		end
 	end)
+end
 end
 
 ----------------------------------------------------------------------
@@ -2363,6 +2541,9 @@ ui.RebuildList = RebuildArrayList
 local Menu = New("Frame", { Name = "Menu", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, ZIndex = 10 }, Gui)
 ui.MenuFrame = Menu
 local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, Menu)
+-- every panel lives in this frame, which the mouse wheel slides up and down
+ui.ScrollY, ui.ScrollTarget = 0, 0
+ui.Scroller = New("Frame", { Name = "Scroller", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 4 }, Menu)
 
 -- Astral theme: panel underlines become a drifting aurora gradient
 ui.Lines = {}
@@ -2390,7 +2571,9 @@ local Modal = New("TextButton", { Size = UDim2.new(), BackgroundTransparency = 1
 local DescLabel = New("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -18), Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = C_HEAD, BackgroundTransparency = 0.1, BorderSizePixel = 0, Font = FONT, TextSize = 13, TextColor3 = C_LIGHT, TextWrapped = true, RichText = true, Text = "", Visible = false, ZIndex = 300 }, Menu)
 New("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6) }, DescLabel)
 New("UISizeConstraint", { MaxSize = Vector2.new(560, 1e4) }, DescLabel)
+do
 local DescStroke = New("UIStroke", { Thickness = 1, Transparency = 0.3 }, DescLabel); Reg(DescStroke, "Color")
+end
 local function SetDesc(t) DescLabel.Text = t or ""; DescLabel.Visible = (t ~= nil and t ~= "") end
 
 -- tooltip style follows the cursor; bottom bar style stays pinned
@@ -2408,6 +2591,7 @@ local function PlaceDesc()
 	DescLabel.Position = UDim2.fromOffset(math.max(x, 6), math.max(y, 6))
 end
 
+do
 local function Brief(str)
 	if not str or str == "" then return "" end
 	return str:match("^(.-%.)%s") or str
@@ -2416,6 +2600,7 @@ function ui.HoverText(title, desc)
 	local d = Brief(desc)
 	if d == "" then return "<b>" .. title .. "</b>" end
 	return "<b>" .. title .. "</b>  -  " .. d
+end
 end
 
 ----------------------------------------------------------------------
@@ -2562,7 +2747,9 @@ end
 ----------------------------------------------------------------------
 local PK_W, PK_H, WR = 176, 236, 60
 local Picker = New("Frame", { Name = "Picker", Size = UDim2.fromOffset(PK_W, PK_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, Visible = false, Active = true, ZIndex = 250 }, Menu)
+do
 local pkStroke = New("UIStroke", { Thickness = 1.5 }, Picker); Reg(pkStroke, "Color")
+end
 local pkTitle = New("TextLabel", { Position = UDim2.fromOffset(10, 6), Size = UDim2.new(1, -40, 0, 18), BackgroundTransparency = 1, Font = FONT_B, TextSize = 13, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, Text = "" }, Picker)
 local pkClose = New("TextButton", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -6, 0, 6), Size = UDim2.fromOffset(20, 18), BackgroundTransparency = 1, Font = FONT_B, TextSize = 14, TextColor3 = C_DIM, Text = "x" }, Picker)
 
@@ -2587,9 +2774,11 @@ do
 end
 local WheelDark = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(WR * 2, WR * 2), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0 }, Wheel)
 New("UICorner", { CornerRadius = UDim.new(0.5, 0) }, WheelDark)
+do
 local WheelRing = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(WR * 2, WR * 2), BackgroundTransparency = 1, BorderSizePixel = 0 }, Wheel)
 New("UICorner", { CornerRadius = UDim.new(0.5, 0) }, WheelRing)
 New("UIStroke", { Thickness = 10, Color = C_HEAD, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, WheelRing)
+end
 local Marker = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(12, 12), BorderSizePixel = 0 }, Wheel)
 New("UICorner", { CornerRadius = UDim.new(0.5, 0) }, Marker)
 New("UIStroke", { Thickness = 2, Color = WHITE }, Marker)
@@ -2631,6 +2820,7 @@ local function WheelFromMouse(x, y)
 	Pk.h = (math.atan2(dy, dx) / (2 * math.pi)) % 1
 	PickerApply(true)
 end
+do
 local function BarFromMouse(x)
 	Pk.v = math.clamp((x - Bar.AbsolutePosition.X) / math.max(Bar.AbsoluteSize.X, 1), 0, 1)
 	PickerApply(true)
@@ -2647,6 +2837,7 @@ BarHit.InputBegan:Connect(function(i)
 		BarFromMouse(ui.MousePos(i).X)
 	end
 end)
+end
 
 local function ClosePicker() Picker.Visible = false; Pk.m, Pk.s = nil, nil end
 pkClose.MouseButton1Click:Connect(ClosePicker)
@@ -2667,8 +2858,10 @@ function ui.OpenPicker(m, s, row)
 	PickerApply(false)
 end
 
+do
 local function pickerText() return ui.HoverText("Color wheel", "Click or drag to pick a color. The bar sets brightness.") end
 for _, o in ipairs({ Picker, WheelHit, BarHit, pkClose }) do ui.AddHover(o, pickerText, Picker) end
+end
 
 ----------------------------------------------------------------------
 -- setting rows
@@ -2922,8 +3115,9 @@ local function Raise(panel)
 	for n, p in ipairs(PanelOrder) do p.ZIndex = 4 + n end
 end
 
+do
 local function CreatePanel(cat, index)
-	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, Menu)
+	local panel = New("Frame", { Name = cat, Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false }, ui.Scroller)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -40, 1, -2), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -2951,6 +3145,7 @@ local function CreatePanel(cat, index)
 	table.insert(PanelOrder, panel)
 end
 for i, cat in ipairs(Categories) do CreatePanel(cat, i) end
+end
 
 -- the Hub is the only tab open at first; it opens and closes every other tab
 local HubPanel, HubContent
@@ -2960,7 +3155,8 @@ local function HubRefresh() for _, f in ipairs(HubPaints) do f() end end
 -- panels can never leave the screen: the whole width and the header always stay visible
 function ui.ClampXY(x, y)
 	local vp = Vector2.new(math.min(ui.Gui.AbsoluteSize.X, Camera.ViewportSize.X), math.min(ui.Gui.AbsoluteSize.Y, Camera.ViewportSize.Y))
-	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, 0, math.max(vp.Y - HEADER_H, 0))
+	local top = -(ui.ScrollY or 0)
+	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, top, math.max(vp.Y - HEADER_H + top, top))
 end
 local function ClampPanel(p)
 	local x, y = ui.ClampXY(p.Position.X.Offset, p.Position.Y.Offset)
@@ -2971,6 +3167,7 @@ function ui.ClampPanels()
 	for _, p in ipairs(PanelFrames) do ClampPanel(p) end
 end
 
+do
 local function SetTab(index, open)
 	local panel = PanelFrames[index]
 	if not panel or panel.Visible == open then return end
@@ -2990,7 +3187,7 @@ end
 ui.SetTab = SetTab
 
 do
-	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, Menu)
+	local panel = New("Frame", { Name = "Hub", Size = UDim2.fromOffset(PANEL_W, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, BorderSizePixel = 0 }, ui.Scroller)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, panel)
 	local header = New("TextButton", { Size = UDim2.new(1, 0, 0, HEADER_H), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = 1 }, panel)
 	New("TextLabel", { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -60, 1, -2), BackgroundTransparency = 1, Text = "Hub", Font = FONT_B, TextSize = 15, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, header)
@@ -3054,9 +3251,12 @@ do
 	HubPanel, HubContent = panel, content
 	table.insert(PanelOrder, panel)
 end
+end
 
 function ui.ResetPanels()
 	ClosePicker()
+	ui.ScrollY, ui.ScrollTarget = 0, 0
+	ui.Scroller.Position = UDim2.new()
 	local vp = Camera.ViewportSize
 	if vp.X < 400 then vp = Vector2.new(1280, 720) end
 	local cols = #PanelFrames + 1
@@ -3220,7 +3420,10 @@ end
 -- search
 ----------------------------------------------------------------------
 local SearchBar = New("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 14), Size = UDim2.fromOffset(340, 32), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, ZIndex = 200 }, Menu)
+do
 local sStroke = New("UIStroke", { Thickness = 1.5 }, SearchBar); Reg(sStroke, "Color")
+end
+do
 local SearchBox = New("TextBox", { Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -24, 1, 0), BackgroundTransparency = 1, PlaceholderText = "Search any module...  (Ctrl+F)", PlaceholderColor3 = C_DIM, Text = "", ClearTextOnFocus = false, Font = FONT, TextSize = 14, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, SearchBar)
 local Results = New("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 50), Size = UDim2.fromOffset(340, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, ZIndex = 200 }, Menu)
 New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, Results)
@@ -3272,6 +3475,27 @@ Conn(UIS.InputChanged, function(i)
 		PanelDrag.panel.Position = UDim2.fromOffset(nx, ny)
 	end
 end)
+-- how far the menu can scroll: until the lowest open panel's bottom edge is on screen
+function ui.ScrollLimit()
+	local bottom = 0
+	local function chk(p) if p and p.Visible then bottom = math.max(bottom, p.Position.Y.Offset + p.AbsoluteSize.Y) end end
+	chk(HubPanel)
+	for _, p in ipairs(PanelFrames) do chk(p) end
+	return math.max(0, bottom - ui.Gui.AbsoluteSize.Y + 40)
+end
+Conn(UIS.InputChanged, function(i)
+	if i.UserInputType ~= Enum.UserInputType.MouseWheel or not ui.MenuOpen or ui.Phone then return end
+	if Typing() then return end
+	if Picker.Visible then ClosePicker() end
+	ui.ScrollTarget = math.clamp(ui.ScrollTarget + i.Position.Z * 70, -ui.ScrollLimit(), 0)
+end)
+function ui.ScrollStep(dt)
+	if ui.MenuOpen then ui.ScrollTarget = math.clamp(ui.ScrollTarget, -ui.ScrollLimit(), 0) end
+	if ui.ScrollY == ui.ScrollTarget then return end
+	ui.ScrollY += (ui.ScrollTarget - ui.ScrollY) * math.min(1, dt * 14)
+	if math.abs(ui.ScrollTarget - ui.ScrollY) < 0.5 then ui.ScrollY = ui.ScrollTarget end
+	ui.Scroller.Position = UDim2.fromOffset(0, ui.ScrollY)
+end
 Conn(UIS.InputEnded, function(i)
 	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 		if PanelDrag and PanelDrag.onEnd then Safe(PanelDrag.onEnd) end
@@ -3349,6 +3573,7 @@ Conn(UIS.InputBegan, function(input, gp)
 		end
 	end
 end)
+end
 
 Conn(UIS.InputEnded, function(input)
 	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -3371,6 +3596,7 @@ RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1
 	Safe(UpdateHover)
 	if ThemeName == "Rainbow" or ThemeName == "Astral" then Repaint() end
 	Safe(ui.AuroraStep)
+	Safe(ui.ScrollStep, dt)
 end)
 
 ----------------------------------------------------------------------
