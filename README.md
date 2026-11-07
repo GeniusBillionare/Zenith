@@ -4,5 +4,5 @@
 
 Loader:
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/GeniusBillionare/AeroVolt/refs/heads/main/src/main.luau"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/GeniusBillionare/Zenith/refs/heads/main/src/main.luau"))()
 ```
