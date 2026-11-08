@@ -1149,7 +1149,7 @@ Module{ Name = "TabGUI", Category = "Render", Desc = "A small menu under the Rob
 	OnEnable = function(m)
 		m._lvl, m._ci, m._mi, m._si = 1, 1, 1, 1
 		local W, H = 124, 22
-		local root = New("Frame", { Name = "ZenithTabGui", Position = UDim2.fromOffset(12, 64), Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, ZIndex = 20 }, ui.Gui)
+		local root = New("Frame", { Name = "ZenithTabGui", Position = UDim2.fromOffset(12, 64), Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, ZIndex = 2 }, ui.Gui)
 		New("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) }, root)
 		m._root = root
 		local rows = {}
@@ -2232,6 +2232,133 @@ Module{ Name = "Rejoin", Category = "Utility", Desc = "Rejoins the server you ar
 		if not ok then ui.Notify("Rejoin only works in a published game", false) end
 	end }
 
+Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
+	Settings = { Mode("Server", { "Random", "Smallest", "Largest" }, "Random", "Which server to join: any other server, the emptiest one, or the fullest one that still has room.") },
+	Action = function(m)
+		ui.Notify("Finding a server...", true)
+		task.spawn(function()
+			local ok, list = pcall(function()
+				local HS = game:GetService("HttpService")
+				local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100"
+				return HS:JSONDecode(game:HttpGet(url)).data
+			end)
+			if not ok or type(list) ~= "table" then ui.Notify("Could not get the server list", false) return end
+			local pool = {}
+			for _, sv in ipairs(list) do
+				if sv.id ~= game.JobId and sv.playing and sv.maxPlayers and sv.playing < sv.maxPlayers then pool[#pool + 1] = sv end
+			end
+			if #pool == 0 then ui.Notify("No other server found", false) return end
+			local pick
+			local mode = m.Values.Server
+			if mode == "Smallest" then table.sort(pool, function(a, b) return a.playing < b.playing end); pick = pool[1]
+			elseif mode == "Largest" then table.sort(pool, function(a, b) return a.playing > b.playing end); pick = pool[1]
+			else pick = pool[math.random(#pool)] end
+			ui.Notify("Joining a server with " .. pick.playing .. " players", true)
+			if not pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, LP) end) then ui.Notify("Server hop failed", false) end
+		end)
+	end }
+
+-- HappyMod Flight: the old-school flight. Hold jump and you shoot upward with an invisible water splash going off over and over.
+-- Move your joystick or keys to swim around, let go of jump and you fall.
+Module{ Name = "HappyModFlight", Category = "Movement", Desc = "The classic old-school flight. Hold jump and you shoot upward with a rapid water splash sound. Move to swim around while you hold it. Let go of jump and you fall.",
+	Settings = {
+		Slider("Power", 10, 120, 1, 45, "How fast you rise while holding jump, in studs per second."),
+		Slider("Swim Speed", 0, 60, 1, 22, "How fast you move around while holding jump."),
+		Toggle("Splash Sound", true, "Plays the water splash sound over and over while you are flying."),
+		Toggle("Lie Down", false, "Lays your body flat, belly down, while you are flying."),
+	},
+	OnEnable = function(m)
+		m._last = 0
+		Hook(m, UIS.JumpRequest, function() m._last = os.clock() end)
+	end,
+	OnTick = function(m)
+		local r, h = Root(), Hum()
+		if not r or not h or h.Health <= 0 then return end
+		local V = m.Values
+		local held = h.Jump or UIS:IsKeyDown(Enum.KeyCode.Space) or os.clock() - m._last < 0.12
+		if held then
+			local md = h.MoveDirection
+			local v = r.AssemblyLinearVelocity
+			local hv = Vector3.new(v.X, 0, v.Z):Lerp(md * V["Swim Speed"], 0.25)
+			r.AssemblyLinearVelocity = Vector3.new(hv.X, V.Power, hv.Z)
+			m._flying = true
+			if V["Lie Down"] then
+				h.PlatformStand = true
+				local look = Camera.CFrame.LookVector
+				r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, math.atan2(-look.X, -look.Z), 0) * CFrame.Angles(math.rad(-90), 0, 0)
+				r.AssemblyAngularVelocity = Vector3.zero
+				m._lay = true
+			end
+		elseif m._flying then
+			m._flying = false
+			if m._lay then
+				m._lay = false
+				h.PlatformStand = false
+				local look = r.CFrame.LookVector
+				r.CFrame = CFrame.new(r.Position + Vector3.new(0, 2, 0)) * CFrame.Angles(0, math.atan2(-look.X, -look.Z), 0)
+			end
+		end
+		if V["Splash Sound"] and m._flying then
+			if not m._snd then
+				m._snd = Instance.new("Sound")
+				m._snd.SoundId = "rbxasset://sounds/impact_water.mp3"
+				m._snd.Volume = 0.6
+				m._snd.Looped = true
+				m._snd.Parent = r
+			end
+			m._snd.PlaybackSpeed = 1.3 + math.random() * 0.4
+			if not m._snd.IsPlaying then m._snd:Play() end
+		elseif m._snd and m._snd.IsPlaying then
+			m._snd:Stop()
+		end
+	end,
+	OnDisable = function(m)
+		if m._snd then m._snd:Destroy(); m._snd = nil end
+		local r, h = Root(), Hum()
+		if h and m._lay then
+			m._lay = false
+			h.PlatformStand = false
+			if r then
+				local look = r.CFrame.LookVector
+				r.CFrame = CFrame.new(r.Position + Vector3.new(0, 2, 0)) * CFrame.Angles(0, math.atan2(-look.X, -look.Z), 0)
+			end
+		end
+	end }
+
+-- Freefall: every animation (idle, walk, run, swim...) is replaced by your fall animation
+Module{ Name = "Freefall", Category = "Player", Desc = "Plays your falling animation all the time. Walking, running and standing still all show you mid-fall.",
+	OnEnable = function(m)
+		Hook(m, RunService.RenderStepped, function()
+			local c = LP.Character
+			local h = c and c:FindFirstChildOfClass("Humanoid")
+			local an = h and h:FindFirstChildOfClass("Animator")
+			if not an then return end
+			if not m._track or m._track.Parent == nil or m._owner ~= c then
+				if m._track then pcall(function() m._track:Stop(0) end) end
+				local id
+				local sc = c:FindFirstChild("Animate")
+				local f = sc and sc:FindFirstChild("fall")
+				local a = f and f:FindFirstChildOfClass("Animation")
+				id = a and a.AnimationId
+				if not id or id == "" then id = h.RigType == Enum.HumanoidRigType.R15 and "rbxassetid://507767968" or "rbxassetid://180436148" end
+				local anim = Instance.new("Animation")
+				anim.AnimationId = id
+				local ok, tr = pcall(function() return an:LoadAnimation(anim) end)
+				if not ok then return end
+				tr.Priority = Enum.AnimationPriority.Action4
+				tr.Looped = true
+				m._track, m._owner = tr, c
+			end
+			if not m._track.IsPlaying then m._track:Play(0.1) end
+			for _, t in ipairs(an:GetPlayingAnimationTracks()) do
+				if t ~= m._track and t.Priority ~= Enum.AnimationPriority.Action4 then t:AdjustWeight(0.001, 0) end
+			end
+		end)
+	end,
+	OnDisable = function(m)
+		if m._track then pcall(function() m._track:Stop(0.1) end); m._track = nil end
+	end }
+
 ----------------------------------------------------------------------
 -- SETTINGS
 ----------------------------------------------------------------------
@@ -2260,6 +2387,7 @@ Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of 
 	end }
 local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Controls how this menu opens and what it looks like.", Passive = true,
 	Settings = {
+		Slider("UI Scale", 0.5, 1.5, 0.05, ui.Phone and 0.75 or 1, "Makes the whole menu bigger or smaller. Lower it if the menu is too large for your screen."),
 		Mode("UI Type", { "Click GUI", "Window" }, "Click GUI", "Click GUI shows every category as its own panel. Window shows one box with the categories on the left and the selected category on the right."),
 		Mode("Menu Key", { "RightShift", "Insert", "RightControl", "RightAlt", "Delete", "Home" }, "RightShift", "The key that opens and closes this menu."),
 		Toggle("Background Blur", true, "Blurs the game behind the menu while it is open."),
@@ -2274,6 +2402,7 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 	},
 	OnChanged = function(m, name)
 		if name == "High Slider Values" and ui.OnHighChanged then ui.OnHighChanged() end
+		if name == "UI Scale" and ui.ApplyScale then ui.ApplyScale() end
 		if name == "UI Type" and ui.SetUIType then ui.SetUIType(m.Values["UI Type"]) end
 		if name == "Keep Across Teleports" and ui.SetKeep then ui.SetKeep(m.Values[name]) end
 		ui.ApplyInterface()
@@ -2495,7 +2624,7 @@ end)
 ----------------------------------------------------------------------
 -- gui root
 ----------------------------------------------------------------------
-local Gui = New("ScreenGui", { Name = "ZenithClient", ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999999 }, PG)
+local Gui = New("ScreenGui", { Name = "ZenithClient", ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 2147483647 }, PG)
 ui.Gui = Gui
 
 -- Two coordinate spaces are in play. "Raw" space is the real screen: UserInputService's mouse,
@@ -2663,13 +2792,14 @@ local ListEntries = {}
 local TWEEN_IN = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TWEEN_OUT = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
-local NoSuffix = { Color = true, ["Menu Key"] = true, ["Target Mode"] = true, ["Bind Mode"] = true, ["Color Mode"] = true }
+local NoSuffix = { ClickTP = true, Zoom = true, Theme = true, GUI = true, Configs = true }
 local function GetSuffix(m)
 	for _, s in ipairs(m.Settings or {}) do
 		if s.Suffix then return tostring(m.Values[s.Name]) end
 	end
+	if NoSuffix[m.Name] then return nil end
 	for _, s in ipairs(m.Settings or {}) do
-		if s.Type == "Mode" and not NoSuffix[s.Name] then return tostring(m.Values[s.Name]) end
+		if s.Type == "Mode" and (s.Name == "Mode" or s.Name == "Method" or s.Name == "Style") then return tostring(m.Values[s.Name]) end
 	end
 end
 
@@ -3376,7 +3506,8 @@ local function HubRefresh() for _, f in ipairs(HubPaints) do f() end end
 function ui.ClampXY(x, y)
 	local vp = Vector2.new(math.min(ui.Gui.AbsoluteSize.X, Camera.ViewportSize.X), math.min(ui.Gui.AbsoluteSize.Y, Camera.ViewportSize.Y))
 	local top = -(ui.ScrollY or 0)
-	return math.clamp(x, 0, math.max(vp.X - PANEL_W, 0)), math.clamp(y, top, math.max(vp.Y - HEADER_H + top, top))
+	local sc = GuiSettings.Values["UI Scale"] or 1
+	return math.clamp(x, 0, math.max(vp.X - PANEL_W * sc, 0)), math.clamp(y, top, math.max(vp.Y - HEADER_H * sc + top, top))
 end
 local function ClampPanel(p)
 	local x, y = ui.ClampXY(p.Position.X.Offset, p.Position.Y.Offset)
@@ -3479,9 +3610,10 @@ function ui.ResetPanels()
 	ui.Scroller.Position = UDim2.new()
 	local vp = Camera.ViewportSize
 	if vp.X < 400 then vp = Vector2.new(1280, 720) end
+	local sc = GuiSettings.Values["UI Scale"] or 1
 	local cols = #PanelFrames + 1
-	local step = math.min(PANEL_W + GAP, (vp.X - 20 - PANEL_W) / (cols - 1))
-	local total = (cols - 1) * step + PANEL_W
+	local step = math.min((PANEL_W + GAP) * sc, (vp.X - 20 - PANEL_W * sc) / (cols - 1))
+	local total = (cols - 1) * step + PANEL_W * sc
 	local x0 = math.max(10, (vp.X - total) / 2)
 	HubPanel.Position = UDim2.fromOffset(x0, 70)
 	HubContent.Visible = true
@@ -3747,12 +3879,19 @@ end
 function ui.BuildWindow()
 	local vp = Camera.ViewportSize
 	if vp.X < 400 then vp = Vector2.new(1280, 720) end
-	local W, H = math.min(660, vp.X - 20), math.min(430, vp.Y - 40)
-	local win = New("Frame", { Name = "Window", Size = UDim2.fromOffset(W, H), Position = UDim2.fromOffset((vp.X - W) / 2, (vp.Y - H) / 2), BackgroundColor3 = C_ROW, BorderSizePixel = 0, Visible = false, ClipsDescendants = true, ZIndex = 5 }, Menu)
-	New("UICorner", { CornerRadius = UDim.new(0, 6) }, win)
-	local bar = New("TextButton", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "" }, win)
-	local title = New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(0, 200, 1, -2), BackgroundTransparency = 1, Text = "Zenith", Font = FONT_B, TextSize = 18, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
-	AddPainter(title, function() title.TextColor3 = Accent(0) end)
+	local W, H = math.min(700, vp.X - 20), math.min(460, vp.Y - 40)
+	local SW = W < 520 and 118 or 160
+	local win = New("Frame", { Name = "Window", Size = UDim2.fromOffset(W, H), Position = UDim2.fromOffset((vp.X - W) / 2, (vp.Y - H) / 2), BackgroundColor3 = Color3.fromRGB(18, 18, 25), BorderSizePixel = 0, Visible = false, ClipsDescendants = true, ZIndex = 5 }, Menu)
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, win)
+	local stroke = New("UIStroke", { Thickness = 1.5, Transparency = 0.35, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, win)
+	AddPainter(stroke, function() stroke.Color = Accent(0.2) end)
+	-- title bar
+	local bar = New("TextButton", { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0, AutoButtonColor = false, Text = "" }, win)
+	local dot = New("Frame", { Position = UDim2.fromOffset(14, 14), Size = UDim2.fromOffset(18, 18), BorderSizePixel = 0 }, bar)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
+	AddPainter(dot, function() dot.BackgroundColor3 = Accent(0) end)
+	local title = New("TextLabel", { Position = UDim2.fromOffset(40, 0), Size = UDim2.new(0, 90, 1, -2), BackgroundTransparency = 1, Text = "Zenith", Font = FONT_B, TextSize = 19, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
+	ui.WinCrumb = New("TextLabel", { Position = UDim2.fromOffset(SW + 14, 0), Size = UDim2.new(1, -(SW + 24), 1, -2), BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 13, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, bar)
 	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, bar)
 	ui.StyleLine(line, 0, bar)
 	bar.InputBegan:Connect(function(i)
@@ -3761,17 +3900,33 @@ function ui.BuildWindow()
 			ui.BeginDrag(win, i)
 		end
 	end)
-	local side = New("ScrollingFrame", { Position = UDim2.fromOffset(0, 38), Size = UDim2.new(0, 140, 1, -38), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, win)
-	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, side)
-	New("UIPadding", { PaddingTop = UDim.new(0, 6) }, side)
-	ui.WinBody = New("ScrollingFrame", { Position = UDim2.fromOffset(140, 38), Size = UDim2.new(1, -140, 1, -38), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, win)
+	-- sidebar
+	local sideBg = New("Frame", { Position = UDim2.fromOffset(0, 46), Size = UDim2.new(0, SW, 1, -46), BackgroundColor3 = Color3.fromRGB(14, 14, 20), BorderSizePixel = 0 }, win)
+	New("TextLabel", { Position = UDim2.fromOffset(16, 10), Size = UDim2.new(1, -16, 0, 14), BackgroundTransparency = 1, Text = "CATEGORIES", Font = FONT_B, TextSize = 10, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left }, sideBg)
+	local side = New("ScrollingFrame", { Position = UDim2.fromOffset(0, 30), Size = UDim2.new(1, 0, 1, -62), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, sideBg)
+	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, side)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, side)
+	local foot = New("TextLabel", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 16, 1, -8), Size = UDim2.new(1, -24, 0, 16), BackgroundTransparency = 1, Text = LP.Name, Font = FONT, TextSize = 12, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, sideBg)
+	New("Frame", { Position = UDim2.new(1, -1, 0, 0), Size = UDim2.new(0, 1, 1, 0), BackgroundColor3 = Color3.fromRGB(34, 34, 46), BorderSizePixel = 0 }, sideBg)
+	-- module list
+	ui.WinBody = New("ScrollingFrame", { Position = UDim2.fromOffset(SW, 46), Size = UDim2.new(1, -SW, 1, -46), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, win)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12), PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10) }, ui.WinBody)
+	ui.WinCounts = {}
 	for i, cat in ipairs(Categories) do
-		local b = New("TextButton", { Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = i }, side)
-		local mark = New("Frame", { Position = UDim2.fromOffset(0, 4), Size = UDim2.new(0, 3, 1, -8), BorderSizePixel = 0 }, b)
-		local l = New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -20, 1, 0), BackgroundTransparency = 1, Text = cat, Font = FONT, TextSize = 14, TextColor3 = C_LIGHT, TextXAlignment = Enum.TextXAlignment.Left }, b)
+		local b = New("TextButton", { Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Color3.fromRGB(26, 26, 36), BackgroundTransparency = 1, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = i }, side)
+		New("UICorner", { CornerRadius = UDim.new(0, 7) }, b)
+		local mark = New("Frame", { Position = UDim2.fromOffset(0, 8), Size = UDim2.new(0, 3, 1, -16), BorderSizePixel = 0 }, b)
+		New("UICorner", { CornerRadius = UDim.new(1, 0) }, mark)
+		local l = New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -44, 1, 0), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 14, TextColor3 = C_LIGHT, TextXAlignment = Enum.TextXAlignment.Left }, b)
+		local cnt = New("TextLabel", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(26, 16), BackgroundColor3 = Color3.fromRGB(12, 12, 18), BorderSizePixel = 0, Text = tostring(#ByCat[cat]), Font = FONT, TextSize = 11, TextColor3 = C_DIM }, b)
+		New("UICorner", { CornerRadius = UDim.new(1, 0) }, cnt)
+		local hov = false
+		b.MouseEnter:Connect(function() hov = true; Repaint() end)
+		b.MouseLeave:Connect(function() hov = false; Repaint() end)
 		AddPainter(b, function()
 			local sel = ui.WinCat == i
-			b.BackgroundColor3 = sel and C_ROW or C_HEAD
+			b.BackgroundTransparency = (sel or hov) and 0 or 1
+			b.BackgroundColor3 = sel and Color3.fromRGB(30, 30, 42) or Color3.fromRGB(24, 24, 33)
 			mark.Visible = sel
 			mark.BackgroundColor3 = Accent(i * 0.1)
 			l.TextColor3 = sel and WHITE or C_LIGHT
@@ -3780,6 +3935,26 @@ function ui.BuildWindow()
 	end
 	ui.Win = win
 end
+function ui.ApplyScale()
+	local sc = GuiSettings.Values["UI Scale"] or 1
+	local function put(f)
+		local u = f:FindFirstChild("ZScale") or New("UIScale", { Name = "ZScale" }, f)
+		u.Scale = sc
+	end
+	for _, p in ipairs(PanelFrames) do put(p) end
+	if HubPanel then put(HubPanel) end
+	if ui.Win then
+		put(ui.Win)
+		local vp = Camera.ViewportSize
+		if vp.X < 400 then vp = Vector2.new(1280, 720) end
+		local w, h = math.min(700, (vp.X - 20) / sc), math.min(460, (vp.Y - 40) / sc)
+		ui.Win.Size = UDim2.fromOffset(w, h)
+		local pos = ui.Win.Position
+		local nx, ny = ui.ClampXY(pos.X.Offset, pos.Y.Offset)
+		ui.Win.Position = UDim2.fromOffset(math.clamp(nx, 0, math.max(vp.X - w * sc, 0)), ny)
+	end
+	if ui.ClampPanels then ui.ClampPanels() end
+end
 function ui.WinSelect(i)
 	ui.WinCat = i
 	for j, c in ipairs(PanelContents) do
@@ -3787,6 +3962,7 @@ function ui.WinSelect(i)
 		else c.Parent = PanelFrames[j]; c.LayoutOrder = 2 end
 	end
 	ui.WinBody.CanvasPosition = Vector2.new()
+	if ui.WinCrumb then ui.WinCrumb.Text = Categories[i] .. "  \xC2\xB7  " .. (CatDesc[Categories[i]] or "") end
 	Repaint()
 end
 function ui.SetUIType(t)
@@ -3797,6 +3973,7 @@ function ui.SetUIType(t)
 	if ui.Win then ui.Win.Visible = win end
 	if win then ui.WinSelect(ui.WinCat or 1)
 	else for j, c in ipairs(PanelContents) do c.Parent = PanelFrames[j]; c.LayoutOrder = 2 end end
+	ui.ApplyScale()
 end
 
 function ui.WheelSink(on)
@@ -3916,5 +4093,6 @@ end)
 if GuiSettings.Values["Keep Across Teleports"] then ui.SetKeep(true) end
 ui.GuiMod = GuiSettings
 Safe(ui.SetUIType, GuiSettings.Values["UI Type"])
+Safe(ui.ApplyScale)
 if GuiSettings.Values["Startup Logo"] then Safe(ui.Splash) end
 ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
