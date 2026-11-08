@@ -285,7 +285,7 @@ function ui.TouchBtn(text, slot)
 end
 function ui.DropTouch(st) if st and st.btn then st.btn:Destroy() end end
 -- Left Ctrl on keyboard, or the DOWN button on a phone
-function ui.Opt(name) return GuiSettings.Values[name] ~= false end
+function ui.Opt(name) local g = ui.GuiMod; return g == nil or g.Values[name] ~= false end
 function ui.Lower(m) return (ui.Opt("Ctrl To Lower") and Down(Enum.KeyCode.LeftControl)) or (m._tDn ~= nil and m._tDn.held) end
 
 local function Module(def)
@@ -612,6 +612,32 @@ Module{ Name = "Jesus", Category = "Movement", Desc = "Lets you walk on top of w
 		end
 	end }
 
+Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the air as if it were water. Space swims up, Left Ctrl swims down.",
+	Settings = { Slider("Speed", 8, 100, 1, 28, "How fast you swim in any direction.") },
+	OnEnable = function(m)
+		workspace.Gravity = 0
+		if UIS.TouchEnabled then m._tUp, m._tDn = ui.TouchBtn("UP", 1), ui.TouchBtn("DOWN", 0) end
+	end,
+	OnDisable = function(m)
+		ui.DropTouch(m._tUp); ui.DropTouch(m._tDn); m._tUp, m._tDn = nil, nil
+		workspace.Gravity = ui.Def.Gravity or 196.2
+		local h = Hum()
+		if h then h:ChangeState(Enum.HumanoidStateType.GettingUp) end
+	end,
+	OnTick = function(m)
+		local r, h = Root(), Hum(); if not r or not h then return end
+		local speed = m.Values.Speed
+		workspace.Gravity = 0
+		h:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
+		h:ChangeState(Enum.HumanoidStateType.Swimming)
+		h.WalkSpeed = speed
+		local v = r.AssemblyLinearVelocity
+		local vy = 0
+		if Down(Enum.KeyCode.Space) or (m._tUp and m._tUp.held) then vy = speed
+		elseif ui.Lower(m) then vy = -speed end
+		r.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
+	end }
+
 Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
 	Settings = {
 		Mode("Mode", { "Lift", "Steer" }, "Lift", "Lift pushes you straight up while it is on. Steer flies you in the direction your camera is facing."),
@@ -738,13 +764,49 @@ Module{ Name = "AntiSit", Category = "Player", Desc = "Stops you from sitting in
 		local h = Hum(); if h then h:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end
 	end }
 
-Module{ Name = "NoFall", Category = "Player", Desc = "Cancels your fall speed right before you land so you take no landing impact.",
-	Settings = { Slider("Threshold", 20, 120, 1, 45, "Minimum fall speed before NoFall kicks in. Lower values also catch shorter falls.") },
+Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps your fall speed low the whole way down, softens the landing, and cancels the landing hit itself.",
+	Settings = {
+		Mode("Method", { "Both", "Clamp Speed", "Soft Land" }, "Both", "Clamp Speed never lets you fall faster than Max Fall Speed. Soft Land only cancels your speed just before the ground. Both does both."),
+		Slider("Max Fall Speed", 10, 120, 1, 30, "The fastest you can fall while Clamp Speed is on. Lower it if a game's fall damage still gets you."),
+		Slider("Threshold", 20, 120, 1, 45, "Fall speed where Soft Land starts cancelling your speed near the ground."),
+		Toggle("Landing Reset", true, "The moment the game says you landed, your fall speed is set to zero so scripts reading it see nothing."),
+		Toggle("No Ragdoll", true, "Stops the humanoid from tripping or ragdolling after a hard landing."),
+	},
+	OnEnable = function(m) m._hum = nil end,
+	OnDisable = function(m)
+		local h = Hum()
+		if h then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true) end
+		m._hum = nil
+	end,
 	OnTick = function(m)
-		local r = Root(); if not r then return end
+		local r, h = Root(), Hum(); if not r or not h then return end
+		local V = m.Values
+		if m._hum ~= h then
+			-- a new character: set it up once
+			m._hum = h
+			if V["No Ragdoll"] then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false) end
+			Hook(m, h.StateChanged, function(old, new)
+				if V["Landing Reset"] and (new == Enum.HumanoidStateType.Landed or (old == Enum.HumanoidStateType.Freefall and new == Enum.HumanoidStateType.Running)) then
+					local rr = Root()
+					if rr then
+						local v = rr.AssemblyLinearVelocity
+						rr.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+					end
+				end
+			end)
+		end
 		local v = r.AssemblyLinearVelocity
-		if v.Y < -m.Values.Threshold and workspace:Raycast(r.Position, Vector3.new(0, -14, 0), RayParams()) then
-			r.AssemblyLinearVelocity = Vector3.new(v.X, -4, v.Z)
+		local mode = V.Method
+		if (mode == "Both" or mode == "Clamp Speed") and v.Y < -V["Max Fall Speed"] then
+			v = Vector3.new(v.X, -V["Max Fall Speed"], v.Z)
+			r.AssemblyLinearVelocity = v
+		end
+		if mode == "Both" or mode == "Soft Land" then
+			-- the faster you fall, the earlier the ground has to be noticed
+			local reach = math.max(14, -v.Y * 0.3)
+			if v.Y < -V.Threshold and workspace:Raycast(r.Position, Vector3.new(0, -reach, 0), RayParams()) then
+				r.AssemblyLinearVelocity = Vector3.new(v.X, -4, v.Z)
+			end
 		end
 	end }
 
@@ -758,6 +820,66 @@ Module{ Name = "AntiVoid", Category = "Player", Desc = "If you fall below the vo
 			r.AssemblyLinearVelocity = Vector3.zero
 			r.CFrame = m._safe + Vector3.new(0, 4, 0)
 		end
+	end }
+
+Module{ Name = "Blink", Category = "Player", Desc = "Pauses what the server sees of you. You move freely on your screen, but the game still sees you standing where you started. Turn it off and everything you did catches up at once.",
+	Settings = { Toggle("Ghost Clone", true, "Leaves a see-through copy of your body where the server thinks you are. It disappears when Blink turns off.") },
+	OnEnable = function(m)
+		local ok = pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end)
+		if not ok then
+			ui.Notify("Your executor can't pause outgoing network data, so Blink can't work", false)
+			task.defer(function() SetEnabled(m, false, true) end)
+			return
+		end
+		local ch = LP.Character
+		if ch and m.Values["Ghost Clone"] then
+			local arch = ch.Archivable
+			ch.Archivable = true
+			local copy = ch:Clone()
+			ch.Archivable = arch
+			if copy then
+				copy.Name = "ZenithBlinkGhost"
+				for _, d in ipairs(copy:GetDescendants()) do
+					if d:IsA("BasePart") then
+						d.Anchored, d.CanCollide, d.CanQuery, d.CanTouch = true, false, false, false
+						d.Transparency = d.Name == "HumanoidRootPart" and 1 or math.max(d.Transparency, 0.65)
+					elseif d:IsA("BaseScript") or d:IsA("Humanoid") or d:IsA("Decal") or d:IsA("Highlight") or d:IsA("BillboardGui") then
+						d:Destroy()
+					end
+				end
+				copy.Parent = workspace
+				m._mark = copy
+			end
+		end
+	end,
+	OnDisable = function(m)
+		pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
+		if m._mark then m._mark:Destroy(); m._mark = nil end
+	end }
+
+-- Fling: your physics body is given an enormous velocity for the physics step only, and your real velocity is put back
+-- before anything is drawn. You move and look completely normal, but anyone who touches you is thrown away.
+Module{ Name = "Fling", Category = "Player", Desc = "While it is on, anyone who touches you gets flung away. You move and look completely normal.",
+	Settings = { Slider("Power", 1000, 100000, 1000, 10000, "How hard people are launched. Higher flings farther but is harder on your own connection.") },
+	OnEnable = function(m)
+		m._vel = Vector3.zero
+		-- physics: right after the game updates, give the body a huge velocity
+		Hook(m, RunService.Heartbeat, function()
+			local r = Root(); if not r then return end
+			m._vel = r.AssemblyLinearVelocity
+			r.AssemblyLinearVelocity = m._vel * m.Values.Power + Vector3.new(0, m.Values.Power, 0)
+		end)
+		-- before drawing and before the next physics step, put your real velocity back
+		Hook(m, RunService.RenderStepped, function()
+			local r = Root(); if r then r.AssemblyLinearVelocity = m._vel end
+		end)
+		Hook(m, RunService.Stepped, function()
+			local r = Root(); if r then r.AssemblyLinearVelocity = m._vel + Vector3.new(0, 0.1, 0) end
+		end)
+	end,
+	OnDisable = function(m)
+		local r = Root()
+		if r and m._vel then r.AssemblyLinearVelocity = m._vel end
 	end }
 
 Module{ Name = "AntiFling", Category = "Player", Desc = "Stops other players from flinging you: their bodies stop colliding with yours, and any sudden launch or spin is cancelled.",
@@ -994,7 +1116,11 @@ Module{ Name = "TabGUI", Category = "Render", Desc = "A small menu under the Rob
 			local v = mod.Values[st.Name]
 			if st.Type == "Button" then Safe(st.Fn, mod) return end
 			if st.Type == "Toggle" then mod.Values[st.Name] = not v
-			elseif st.Type == "Slider" then mod.Values[st.Name] = tonumber(string.format("%.4f", math.clamp(v + dir * st.Step, st.Min, ui.MaxOf(st))))
+			elseif st.Type == "Slider" then
+				-- Enter steps the slider up and wraps back to the start at the top
+				local hi, nv = ui.MaxOf(st), v + dir * st.Step
+				if nv > hi + 1e-6 then nv = st.Min elseif nv < st.Min then nv = hi end
+				mod.Values[st.Name] = tonumber(string.format("%.4f", nv))
 			elseif st.Type == "Mode" then
 				local o = type(st.Options) == "function" and st.Options() or st.Options
 				local idx = table.find(o, v) or 0
@@ -1075,11 +1201,8 @@ Module{ Name = "TabGUI", Category = "Render", Desc = "A small menu under the Rob
 				local st = sets[m._si]
 				if key == K.Up then m._si = wrap(m._si - 1, #sets)
 				elseif key == K.Down then m._si = wrap(m._si + 1, #sets)
-				elseif key == K.Backspace then m._lvl = 2
+				elseif key == K.Backspace or key == K.Left then m._lvl = 2
 				elseif key == K.Return and st then adjust(mod, st, 1)
-				elseif key == K.Right and st then adjust(mod, st, 1)
-				elseif key == K.Left and st then
-					if st.Type == "Slider" or st.Type == "Mode" then adjust(mod, st, -1) else m._lvl = 2 end
 				end
 			end
 			m._build()
@@ -1296,6 +1419,7 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title
 		Toggle("Ping", true, "Shows your ping in the bottom left."),
 		Toggle("Coords", true, "Shows your X, Y and Z position in the bottom left."),
 		Toggle("Speed", true, "Shows how fast your character is moving, in studs per second."),
+		Toggle("Real Speed", true, "Shows your real speed from how far you actually moved each frame, so teleports and CFrame movement count too."),
 		Slider("Text Size", 11, 24, 1, 14, "Size of the bottom left text."),
 		Toggle("Theme Accent", true, "Uses your theme color for the title and info bar. Picking a Watermark Color turns this off."),
 		ColorSet("Watermark Color", Color3.fromRGB(160, 90, 255), "Color of the title and info bar. Only used when Theme Accent is off."),
@@ -1355,6 +1479,20 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title
 				m._spd = (m._spd or 0) + (r.AssemblyLinearVelocity.Magnitude - (m._spd or 0)) * math.min(1, dt * 12)
 				table.insert(lines, ("Speed %.1f"):format(m._spd))
 			end
+		end
+		if V["Real Speed"] then
+			local r = Root()
+			if r then
+				local pos = r.Position
+				if m._lp and dt > 0 then
+					local raw = (pos - m._lp).Magnitude / dt
+					m._rs = (m._rs or 0) + (raw - (m._rs or 0)) * math.min(1, dt * 10)
+				end
+				m._lp = pos
+				table.insert(lines, ("Real Speed %.1f"):format(m._rs or 0))
+			end
+		else
+			m._lp = nil
 		end
 		if V.Coords then
 			local r = Root()
@@ -3523,9 +3661,19 @@ function ui.ApplyInterface()
 	end
 end
 
+function ui.WheelSink(on)
+	local cas = game:GetService("ContextActionService")
+	if on then
+		cas:BindActionAtPriority("ZenithWheel", function() return Enum.ContextActionResult.Sink end, false, Enum.ContextActionPriority.High.Value + 20, Enum.UserInputType.MouseWheel)
+	else
+		pcall(function() cas:UnbindAction("ZenithWheel") end)
+	end
+end
+
 local function SetMenu(open)
 	ui.MenuOpen = open
 	Modal.Modal = open
+	ui.WheelSink(open)
 	if open then
 		Menu.Visible = true
 		ui.ClampPanels()
@@ -3628,5 +3776,6 @@ Conn(LP.OnTeleport, function(state)
 	end
 end)
 if GuiSettings.Values["Keep Across Teleports"] then ui.SetKeep(true) end
+ui.GuiMod = GuiSettings
 if GuiSettings.Values["Startup Logo"] then Safe(ui.Splash) end
 ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
