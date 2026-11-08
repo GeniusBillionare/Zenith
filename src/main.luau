@@ -79,22 +79,56 @@ local Themes = {
 	Cyan = Color3.fromRGB(0, 200, 215),    Green = Color3.fromRGB(70, 215, 110),
 	Red = Color3.fromRGB(255, 70, 80),     Orange = Color3.fromRGB(255, 150, 50),
 	Pink = Color3.fromRGB(255, 100, 200),  Rainbow = Color3.new(1, 1, 1),
-	Astral = Color3.fromRGB(150, 90, 255),
+	Teal = Color3.fromRGB(0, 180, 170),    Lime = Color3.fromRGB(170, 230, 50),
+	Yellow = Color3.fromRGB(250, 220, 60), Magenta = Color3.fromRGB(230, 50, 200),
+	Indigo = Color3.fromRGB(90, 80, 230),  Coral = Color3.fromRGB(255, 115, 95),
+	Sky = Color3.fromRGB(110, 190, 255),   Snow = Color3.fromRGB(235, 235, 245),
 }
--- Astral drifts slowly through violet, blue, cyan and a teal green, like an aurora
-Themes.AstralSpeed = 0.1
-Themes.AstralStops = { Color3.fromRGB(150, 85, 255), Color3.fromRGB(70, 125, 255), Color3.fromRGB(0, 205, 235), Color3.fromRGB(55, 235, 170) }
-local ThemeOrder = { "Purple", "Blue", "Cyan", "Green", "Red", "Orange", "Pink", "Astral", "Rainbow" }
-local ThemeName, RainbowSpeed = "Purple", 0.25
+-- animated themes: the accent drifts through these colors. one "Theme Speed" slider drives all of them
+local function RGBs(...) local t = {} for _, c in ipairs({ ... }) do t[#t + 1] = Color3.fromRGB(c[1], c[2], c[3]) end return t end
+Themes.G = {
+	Astral = RGBs({150, 85, 255}, {70, 125, 255}, {0, 205, 235}, {55, 235, 170}),
+	Ocean = RGBs({0, 119, 255}, {0, 198, 255}, {0, 255, 208}),
+	Sunset = RGBs({255, 94, 98}, {255, 153, 102}, {255, 209, 102}, {240, 101, 149}),
+	Ember = RGBs({255, 61, 0}, {255, 143, 0}, {255, 213, 79}),
+	Forest = RGBs({27, 158, 90}, {123, 216, 143}, {46, 196, 182}),
+	Sakura = RGBs({255, 158, 199}, {255, 200, 221}, {199, 125, 255}),
+	Ice = RGBs({160, 233, 255}, {111, 177, 255}, {224, 247, 255}),
+	Toxic = RGBs({182, 255, 0}, {0, 230, 118}, {57, 255, 20}),
+	Vaporwave = RGBs({255, 113, 206}, {185, 103, 255}, {1, 205, 254}, {5, 255, 161}),
+	Galaxy = RGBs({125, 70, 210}, {117, 151, 222}, {196, 113, 237}, {18, 194, 233}),
+	Gold = RGBs({249, 212, 35}, {255, 154, 0}, {255, 241, 168}),
+	Mint = RGBs({127, 255, 212}, {62, 224, 176}, {184, 255, 233}),
+	Crimson = RGBs({200, 20, 40}, {255, 23, 68}, {255, 97, 111}),
+	Lavender = RGBs({179, 157, 219}, {149, 117, 205}, {225, 190, 231}),
+	Neon = RGBs({255, 0, 255}, {0, 255, 255}),
+	Candy = RGBs({255, 154, 158}, {250, 208, 196}, {161, 140, 209}),
+	Twilight = RGBs({106, 130, 251}, {252, 92, 125}),
+	Peach = RGBs({255, 184, 140}, {255, 126, 95}),
+	Mojito = RGBs({29, 151, 108}, {147, 249, 185}),
+	Monochrome = RGBs({255, 255, 255}, {150, 150, 160}, {90, 90, 100}),
+}
+Themes.Speed = 0.2
+local ThemeOrder = { "Purple", "Blue", "Cyan", "Green", "Red", "Orange", "Pink", "Teal", "Lime", "Yellow", "Magenta", "Indigo", "Coral", "Sky", "Snow" }
+do
+	local gs = {}
+	for n, st in pairs(Themes.G) do Themes[n] = st[1]; gs[#gs + 1] = n end
+	table.sort(gs)
+	table.remove(gs, table.find(gs, "Astral"))
+	table.insert(ThemeOrder, "Astral")
+	for _, n in ipairs(gs) do table.insert(ThemeOrder, n) end
+	table.insert(ThemeOrder, "Rainbow")
+end
+local ThemeName = "Purple"
 
 local function Accent(offset)
 	if ThemeName == "Rainbow" then
-		return Color3.fromHSV((tick() * RainbowSpeed + (offset or 0)) % 1, 0.65, 1)
+		return Color3.fromHSV((tick() * Themes.Speed * 1.25 + (offset or 0)) % 1, 0.65, 1)
 	end
-	if ThemeName == "Astral" then
-		local stops = Themes.AstralStops
+	local stops = Themes.G[ThemeName]
+	if stops then
 		local n = #stops
-		local t = ((tick() * Themes.AstralSpeed + (offset or 0) * 0.5) % 1) * n
+		local t = ((tick() * Themes.Speed * 0.5 + (offset or 0) * 0.5) % 1) * n
 		local i = math.floor(t)
 		local f = t - i
 		return stops[i % n + 1]:Lerp(stops[(i + 1) % n + 1], f * f * (3 - 2 * f))
@@ -976,15 +1010,51 @@ Module{ Name = "Reset", Category = "Player", Desc = "Kills your character so you
 ----------------------------------------------------------------------
 -- RENDER (all local, only you see these)
 ----------------------------------------------------------------------
+-- team detection: Roblox teams first, then the usual custom setups (attributes, leaderstats/value objects, team folders)
+local TeamNames = { "Team", "TeamName", "team", "teamName", "TeamColor", "Side", "Faction", "Squad", "Alliance" }
+function ui.TeamKey(p)
+	if p.Team then return "T:" .. p.Team.Name end
+	local ch = p.Character
+	for _, o in ipairs({ p, ch }) do
+		for _, n in ipairs(TeamNames) do
+			local v = o:GetAttribute(n)
+			if v ~= nil then return "A:" .. tostring(v) end
+		end
+	end
+	for _, o in ipairs({ p, p:FindFirstChild("leaderstats"), ch, p:FindFirstChild("PlayerData"), p:FindFirstChild("Data") }) do
+		for _, n in ipairs(TeamNames) do
+			local v = o:FindFirstChild(n)
+			if v and v:IsA("ValueBase") then return "V:" .. tostring(v.Value) end
+		end
+	end
+	local par = ch and ch.Parent
+	if par and par ~= workspace and par:IsA("Folder") and not table.find({ "Players", "Characters", "Live", "Alive", "Entities", "Living" }, par.Name) then return "F:" .. par.Name end
+	return nil
+end
+function ui.SameTeam(p)
+	local ok, r = pcall(function()
+		local a = ui.TeamKey(LP)
+		return a ~= nil and a == ui.TeamKey(p)
+	end)
+	return ok and r
+end
+function ui.TeamColor(p)
+	if p.Team then return p.TeamColor.Color end
+	local k = ui.TeamKey(p)
+	if not k then return WHITE end
+	local h = 0
+	for i = 1, #k do h = (h * 31 + k:byte(i)) % 997 end
+	return Color3.fromHSV(h / 997, 0.7, 1)
+end
 local function ColorFor(p, mode, off)
-	if mode == "Team" then return p.TeamColor.Color
-	elseif mode == "Rainbow" then return Color3.fromHSV((tick() * 0.3 + (off or 0)) % 1, 0.7, 1)
+	if mode == "Team" then return ui.TeamColor(p)
+	elseif mode == "Rainbow" then return Color3.fromHSV((tick() * Themes.Speed * 1.2 + (off or 0)) % 1, 0.7, 1)
 	elseif mode == "White" then return WHITE
 	elseif mode == "Red" then return Color3.fromRGB(255, 60, 60) end
 	return Accent()
 end
 local function Pass(m, p, root)
-	if m.Values["Team Check"] and p.Team and p.Team == LP.Team then return false end
+	if m.Values["Team Check"] and ui.SameTeam(p) then return false end
 	local mr = Root()
 	if mr and root and (root.Position - mr.Position).Magnitude > m.Values["Max Distance"] then return false end
 	return true
@@ -1636,7 +1706,7 @@ local function FindTarget(m, prefer)
 	local radius = FOVc.Values.Radius
 	local best, bestScore
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= LP and not (V["Team Check"] and p.Team and p.Team == LP.Team) then
+		if p ~= LP and not (V["Team Check"] and ui.SameTeam(p)) then
 			local ch = p.Character
 			local hum = ch and ch:FindFirstChildOfClass("Humanoid")
 			local part = ch and (V["Aim Part"] == "Head" and ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart"))
@@ -1764,7 +1834,7 @@ Module{ Name = "Hitbox Expander", Category = "Combat", Desc = "Makes other playe
 		if m._part ~= V.Part then HBRestoreAll(); m._part = V.Part end
 		for _, p in ipairs(Players:GetPlayers()) do
 			local ch = p ~= LP and p.Character
-			if ch and not (V["Team Check"] and p.Team and p.Team == LP.Team) then
+			if ch and not (V["Team Check"] and ui.SameTeam(p)) then
 				local hum = ch:FindFirstChildOfClass("Humanoid")
 				local part = ch:FindFirstChild(V.Part == "Head" and "Head" or "HumanoidRootPart")
 				if part and hum and hum.Health > 0 then
@@ -1931,7 +2001,7 @@ Module{ Name = "Triggerbot", Category = "Combat", Desc = "Automatically uses you
 		local model = hit and hit.Instance:FindFirstAncestorOfClass("Model")
 		local p = model and Players:GetPlayerFromCharacter(model)
 		local hum = model and model:FindFirstChildOfClass("Humanoid")
-		if p and p ~= LP and hum and hum.Health > 0 and not (V["Team Check"] and p.Team and p.Team == LP.Team) then
+		if p and p ~= LP and hum and hum.Health > 0 and not (V["Team Check"] and ui.SameTeam(p)) then
 			m._since = m._since or tick()
 			local gap = clicking and 1000 / V["Click CPS"] or V.Cooldown
 			if (tick() - m._since) * 1000 >= V.Delay and (tick() - (m._last or 0)) * 1000 >= gap then
@@ -2179,19 +2249,18 @@ local Notifs = Module{ Name = "Notifications", Category = "Settings", Desc = "Sh
 		Slider("Duration", 1, 8, 0.5, 3, "How many seconds each pop-up stays on screen."),
 		Toggle("Module Toggles", false, "Also shows a pop-up whenever a module is turned on or off."),
 	} }
-Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of the whole client. Rainbow cycles through every color, Astral drifts through violet, blue, cyan and teal.", Passive = true,
+Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of the whole client. Gradient themes (Astral, Ocean, Sunset and more) and Rainbow animate, all at the speed of Theme Speed.", Passive = true,
 	Settings = {
 		Mode("Color", ThemeOrder, "Purple", "The accent color used across the menu, array list and visuals."),
-		Slider("Rainbow Speed", 0.05, 1, 0.05, 0.25, "How fast the Rainbow theme cycles through colors."),
-		Slider("Astral Speed", 0.02, 0.6, 0.02, 0.1, "How fast the Astral theme drifts through violet, blue, cyan and teal."),
+		Slider("Theme Speed", 0.02, 1, 0.02, 0.2, "How fast every animated theme (Rainbow, Astral, Ocean, Sunset and the rest) moves through its colors."),
 	},
 	OnChanged = function(m)
-		ThemeName, RainbowSpeed = m.Values.Color, m.Values["Rainbow Speed"]
-		Themes.AstralSpeed = m.Values["Astral Speed"]
+		ThemeName, Themes.Speed = m.Values.Color, m.Values["Theme Speed"]
 		Repaint()
 	end }
 local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Controls how this menu opens and what it looks like.", Passive = true,
 	Settings = {
+		Mode("UI Type", { "Click GUI", "Window" }, "Click GUI", "Click GUI shows every category as its own panel. Window shows one box with the categories on the left and the selected category on the right."),
 		Mode("Menu Key", { "RightShift", "Insert", "RightControl", "RightAlt", "Delete", "Home" }, "RightShift", "The key that opens and closes this menu."),
 		Toggle("Background Blur", true, "Blurs the game behind the menu while it is open."),
 		Toggle("Background Dim", true, "Darkens the game behind the menu while it is open."),
@@ -2205,6 +2274,7 @@ local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Control
 	},
 	OnChanged = function(m, name)
 		if name == "High Slider Values" and ui.OnHighChanged then ui.OnHighChanged() end
+		if name == "UI Type" and ui.SetUIType then ui.SetUIType(m.Values["UI Type"]) end
 		if name == "Keep Across Teleports" and ui.SetKeep then ui.SetKeep(m.Values[name]) end
 		ui.ApplyInterface()
 	end }
@@ -2593,9 +2663,13 @@ local ListEntries = {}
 local TWEEN_IN = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TWEEN_OUT = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
+local NoSuffix = { Color = true, ["Menu Key"] = true, ["Target Mode"] = true, ["Bind Mode"] = true, ["Color Mode"] = true }
 local function GetSuffix(m)
 	for _, s in ipairs(m.Settings or {}) do
 		if s.Suffix then return tostring(m.Values[s.Name]) end
+	end
+	for _, s in ipairs(m.Settings or {}) do
+		if s.Type == "Mode" and not NoSuffix[s.Name] then return tostring(m.Values[s.Name]) end
 	end
 end
 
@@ -2683,23 +2757,31 @@ local Dim = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Colo
 ui.ScrollY, ui.ScrollTarget = 0, 0
 ui.Scroller = New("Frame", { Name = "Scroller", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 4 }, Menu)
 
--- Astral theme: panel underlines become a drifting aurora gradient
+-- gradient themes: panel underlines become a drifting gradient of the theme's colors
 ui.Lines = {}
 function ui.StyleLine(line, offset, header)
-	local st = Themes.AstralStops
-	local g = New("UIGradient", { Enabled = false, Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, st[1]), ColorSequenceKeypoint.new(0.35, st[2]),
-		ColorSequenceKeypoint.new(0.7, st[3]), ColorSequenceKeypoint.new(1, st[4]) }) }, line)
+	local g = New("UIGradient", { Enabled = false }, line)
 	table.insert(ui.Lines, g)
+	local cur
 	AddPainter(line, function()
-		local astral = ThemeName == "Astral"
-		line.BackgroundColor3 = astral and WHITE or Accent(offset)
-		g.Enabled = astral
+		local st = Themes.G[ThemeName]
+		if st then
+			if cur ~= ThemeName then
+				cur = ThemeName
+				local n, kp = #st, {}
+				for i, c in ipairs(st) do kp[i] = ColorSequenceKeypoint.new((i - 1) / (n - 1), c) end
+				g.Color = ColorSequence.new(kp)
+			end
+			line.BackgroundColor3 = WHITE
+		else
+			line.BackgroundColor3 = Accent(offset)
+		end
+		g.Enabled = st ~= nil
 	end)
 end
--- Astral: the panel underlines slowly shimmer through the aurora colors
+-- gradient themes: the panel underlines slowly shimmer
 function ui.AuroraStep()
-	if ThemeName ~= "Astral" then return end
+	if not Themes.G[ThemeName] then return end
 	local t = tick()
 	for i, g in ipairs(ui.Lines) do g.Offset = Vector2.new(math.sin(t * 0.5 + i) * 0.3, 0) end
 end
@@ -3661,6 +3743,62 @@ function ui.ApplyInterface()
 	end
 end
 
+-- Window UI type: one box, categories on the left, the selected category's modules on the right
+function ui.BuildWindow()
+	local vp = Camera.ViewportSize
+	if vp.X < 400 then vp = Vector2.new(1280, 720) end
+	local W, H = math.min(660, vp.X - 20), math.min(430, vp.Y - 40)
+	local win = New("Frame", { Name = "Window", Size = UDim2.fromOffset(W, H), Position = UDim2.fromOffset((vp.X - W) / 2, (vp.Y - H) / 2), BackgroundColor3 = C_ROW, BorderSizePixel = 0, Visible = false, ClipsDescendants = true, ZIndex = 5 }, Menu)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, win)
+	local bar = New("TextButton", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "" }, win)
+	local title = New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(0, 200, 1, -2), BackgroundTransparency = 1, Text = "Zenith", Font = FONT_B, TextSize = 18, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
+	AddPainter(title, function() title.TextColor3 = Accent(0) end)
+	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, bar)
+	ui.StyleLine(line, 0, bar)
+	bar.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			ClosePicker()
+			ui.BeginDrag(win, i)
+		end
+	end)
+	local side = New("ScrollingFrame", { Position = UDim2.fromOffset(0, 38), Size = UDim2.new(0, 140, 1, -38), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, win)
+	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, side)
+	New("UIPadding", { PaddingTop = UDim.new(0, 6) }, side)
+	ui.WinBody = New("ScrollingFrame", { Position = UDim2.fromOffset(140, 38), Size = UDim2.new(1, -140, 1, -38), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, win)
+	for i, cat in ipairs(Categories) do
+		local b = New("TextButton", { Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = i }, side)
+		local mark = New("Frame", { Position = UDim2.fromOffset(0, 4), Size = UDim2.new(0, 3, 1, -8), BorderSizePixel = 0 }, b)
+		local l = New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -20, 1, 0), BackgroundTransparency = 1, Text = cat, Font = FONT, TextSize = 14, TextColor3 = C_LIGHT, TextXAlignment = Enum.TextXAlignment.Left }, b)
+		AddPainter(b, function()
+			local sel = ui.WinCat == i
+			b.BackgroundColor3 = sel and C_ROW or C_HEAD
+			mark.Visible = sel
+			mark.BackgroundColor3 = Accent(i * 0.1)
+			l.TextColor3 = sel and WHITE or C_LIGHT
+		end)
+		b.MouseButton1Click:Connect(function() ClosePicker(); ui.WinSelect(i) end)
+	end
+	ui.Win = win
+end
+function ui.WinSelect(i)
+	ui.WinCat = i
+	for j, c in ipairs(PanelContents) do
+		if j == i then c.Parent = ui.WinBody; c.Visible = true; c.LayoutOrder = 1
+		else c.Parent = PanelFrames[j]; c.LayoutOrder = 2 end
+	end
+	ui.WinBody.CanvasPosition = Vector2.new()
+	Repaint()
+end
+function ui.SetUIType(t)
+	local win = t == "Window"
+	if win and not ui.Win then ui.BuildWindow() end
+	ui.UIType = t
+	ui.Scroller.Visible = not win
+	if ui.Win then ui.Win.Visible = win end
+	if win then ui.WinSelect(ui.WinCat or 1)
+	else for j, c in ipairs(PanelContents) do c.Parent = PanelFrames[j]; c.LayoutOrder = 2 end end
+end
+
 function ui.WheelSink(on)
 	local cas = game:GetService("ContextActionService")
 	if on then
@@ -3742,7 +3880,7 @@ RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1
 	for _, m in ipairs(Modules) do if m.Enabled and m.OnRender then Safe(m.OnRender, m, dt) end end
 	Safe(UpdateESP)
 	Safe(UpdateHover)
-	if ThemeName == "Rainbow" or ThemeName == "Astral" then Repaint() end
+	if ThemeName == "Rainbow" or Themes.G[ThemeName] then Repaint() end
 	Safe(ui.AuroraStep)
 	Safe(ui.ScrollStep, dt)
 end)
@@ -3777,5 +3915,6 @@ Conn(LP.OnTeleport, function(state)
 end)
 if GuiSettings.Values["Keep Across Teleports"] then ui.SetKeep(true) end
 ui.GuiMod = GuiSettings
+Safe(ui.SetUIType, GuiSettings.Values["UI Type"])
 if GuiSettings.Values["Startup Logo"] then Safe(ui.Splash) end
 ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
