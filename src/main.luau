@@ -230,14 +230,14 @@ function ui.DrawLogo(parent, height, opts)
 			end)
 		end
 	end
-	for i, p in ipairs(ui.LogoShapes.Mark) do fill(p, (i - 1) * 0.25) end
+	for i, p in ipairs(ui.LogoShapes.Mark) do fill(p, 0) end
 	for i, d in ipairs(ui.LogoShapes.Dots) do
 		local size = math.max(2, d[3] * 2 * s)
 		local dot = New("Frame", { Position = UDim2.fromOffset((d[1] - OX) * s - size / 2, (d[2] - OY) * s - size / 2), Size = UDim2.fromOffset(size, size), BorderSizePixel = 0 }, root)
 		New("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
-		AddPainter(dot, function() dot.BackgroundColor3 = fixed or Accent(0.5 + i * 0.1) end)
+		AddPainter(dot, function() dot.BackgroundColor3 = fixed or Accent(0) end)
 	end
-	if opts.text then for i, p in ipairs(ui.LogoShapes.Letters) do fill(p, 0.1 + i * 0.05) end end
+	if opts.text then for i, p in ipairs(ui.LogoShapes.Letters) do fill(p, 0) end end
 	return root
 end
 
@@ -668,6 +668,31 @@ Module{ Name = "Jesus", Category = "Movement", Desc = "Lets you walk on top of w
 		end
 	end }
 
+-- air swimming: a clean 3D swim vector from your movement keys/stick and camera, plus a check for real water
+function ui.SwimDir(h)
+	local md = h.MoveDirection
+	if md.Magnitude < 0.05 then return Vector3.zero end
+	local cf = Camera.CFrame
+	local flat = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+	local f = flat.Magnitude > 0 and md:Dot(flat.Unit) or 0
+	local d = cf.LookVector * f + cf.RightVector * md:Dot(cf.RightVector)
+	return d.Magnitude > 0.01 and d.Unit or Vector3.zero
+end
+function ui.InWater(r)
+	local now = os.clock()
+	if now - (ui._wT or 0) < 0.25 then return ui._wV end
+	ui._wT = now
+	local ok, res = pcall(function()
+		local p = r.Position
+		local reg = Region3.new(p - Vector3.new(3, 3, 3), p + Vector3.new(3, 3, 3)):ExpandToGrid(4)
+		for _, a in ipairs((workspace.Terrain:ReadVoxels(reg, 4))) do
+			for _, b in ipairs(a) do for _, c in ipairs(b) do if c == Enum.Material.Water then return true end end end
+		end
+		return false
+	end)
+	ui._wV = ok and res or false
+	return ui._wV
+end
 Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the air as if it were water. Space swims up, Left Ctrl swims down.",
 	Settings = { Slider("Speed", 8, 100, 1, 28, "How fast you swim in any direction.") },
 	OnEnable = function(m)
@@ -688,10 +713,32 @@ Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the 
 		h:ChangeState(Enum.HumanoidStateType.Swimming)
 		h.WalkSpeed = speed
 		local v = r.AssemblyLinearVelocity
-		local vy = 0
-		if Down(Enum.KeyCode.Space) or (m._tUp and m._tUp.held) then vy = speed
-		elseif ui.Lower(m) then vy = -speed end
-		r.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z)
+		local tgt = ui.SwimDir(h) * speed
+		if Down(Enum.KeyCode.Space) or (m._tUp and m._tUp.held) then tgt += Vector3.new(0, speed, 0)
+		elseif ui.Lower(m) then tgt -= Vector3.new(0, speed, 0) end
+		if tgt.Magnitude > speed then tgt = tgt.Unit * speed end
+		r.AssemblyLinearVelocity = v:Lerp(tgt, 0.35)
+	end }
+
+Module{ Name = "SwimAssist", Category = "Movement", Desc = "Fixes swimming in the air when another script or game puts you in the swim state. Instead of flinging you in one direction, you swim where you point and stop when you let go.",
+	Settings = {
+		Slider("Speed", 5, 100, 1, 24, "How fast you swim."),
+		Slider("Smoothing", 0.05, 1, 0.05, 0.35, "How quickly you reach full speed and stop. Lower is floatier."),
+		Toggle("Only In Air", true, "Leaves real water alone and only takes over when you are swimming in the air."),
+		Toggle("Vertical Keys", true, "Space swims up and Left Ctrl swims down while assisting."),
+	},
+	OnTick = function(m)
+		local r, h = Root(), Hum(); if not r or not h then return end
+		local V = m.Values
+		if h:GetState() ~= Enum.HumanoidStateType.Swimming then return end
+		if V["Only In Air"] and ui.InWater(r) then return end
+		local tgt = ui.SwimDir(h) * V.Speed
+		if V["Vertical Keys"] then
+			if Down(Enum.KeyCode.Space) or h.Jump then tgt += Vector3.new(0, V.Speed, 0)
+			elseif ui.Lower(m) then tgt -= Vector3.new(0, V.Speed, 0) end
+		end
+		if tgt.Magnitude > V.Speed then tgt = tgt.Unit * V.Speed end
+		r.AssemblyLinearVelocity = r.AssemblyLinearVelocity:Lerp(tgt, V.Smoothing)
 	end }
 
 Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
@@ -827,8 +874,10 @@ Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps y
 		Slider("Threshold", 20, 120, 1, 45, "Fall speed where Soft Land starts cancelling your speed near the ground."),
 		Toggle("Landing Reset", true, "The moment the game says you landed, your fall speed is set to zero so scripts reading it see nothing."),
 		Toggle("No Ragdoll", true, "Stops the humanoid from tripping or ragdolling after a hard landing."),
+		Toggle("Spike Guard", true, "Watches for the same signs fall-damage scripts look for: very high speed and speed that changes suddenly. When your speed jumps by more than the limit in one frame, it is flattened and held near zero for a moment."),
+		Slider("Spike Limit", 20, 250, 5, 60, "How much your speed may change in a single frame before Spike Guard steps in."),
 	},
-	OnEnable = function(m) m._hum = nil end,
+	OnEnable = function(m) m._hum = nil; m._last = nil; m._grace = 0 end,
 	OnDisable = function(m)
 		local h = Hum()
 		if h then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true) end
@@ -852,6 +901,24 @@ Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps y
 			end)
 		end
 		local v = r.AssemblyLinearVelocity
+		if V["Spike Guard"] then
+			local last = m._last
+			m._last = v
+			local now = os.clock()
+			if last and last.Y < -V.Threshold and (v - last).Magnitude > V["Spike Limit"] then
+				m._grace = now + 0.3
+			end
+			if now < (m._grace or 0) then
+				v = Vector3.new(v.X, math.max(v.Y, -2), v.Z)
+				if v.Y > 5 then v = Vector3.new(v.X, 5, v.Z) end
+				r.AssemblyLinearVelocity = v
+				return
+			end
+			if math.abs(v.Y) > V["Max Fall Speed"] * 3 and v.Y > 0 then
+				-- huge upward spikes right after a fall are collisions being resolved
+				if last and last.Y < -V.Threshold then r.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z); return end
+			end
+		end
 		local mode = V.Method
 		if (mode == "Both" or mode == "Clamp Speed") and v.Y < -V["Max Fall Speed"] then
 			v = Vector3.new(v.X, -V["Max Fall Speed"], v.Z)
@@ -2254,6 +2321,283 @@ Module{ Name = "Rejoin", Category = "Utility", Desc = "Rejoins the server you ar
 		if not ok then ui.Notify("Rejoin only works in a published game", false) end
 	end }
 
+function ui.JoinPlayer(m)
+	local name = tostring(m.Values.Username or ""):gsub("%s", "")
+	if name == "" then ui.Notify("Type a username first", false) return end
+	if Players:FindFirstChild(name) then ui.Notify(name .. " is already in this server", false) return end
+	ui.Notify("Looking for " .. name .. "...", true)
+	task.spawn(function()
+		local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(name) end)
+		if not ok or not uid then ui.Notify("No Roblox user called " .. name, false) return end
+		local placeId, jobId
+		local ok2, cur, _, pid, iid = pcall(function() return TeleportService:GetPlayerPlaceInstanceAsync(uid) end)
+		if ok2 and pid and iid then placeId, jobId = pid, iid end
+		if not placeId then
+			local req = request or http_request or (syn and syn.request)
+			if req then
+				local ok3, res = pcall(function()
+					local r = req({ Url = "https://presence.roblox.com/v1/presence/users", Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = game:GetService("HttpService"):JSONEncode({ userIds = { uid } }) })
+					return game:GetService("HttpService"):JSONDecode(r.Body).userPresences[1]
+				end)
+				if ok3 and res and res.placeId and res.gameId then placeId, jobId = res.placeId, res.gameId end
+			end
+		end
+		if not placeId then ui.Notify(name .. " is offline, or their joins are hidden", false) return end
+		ui.Notify("Joining " .. name .. "...", true)
+		if placeId ~= game.PlaceId and setclipboard then
+			pcall(setclipboard, "roblox://experiences/start?placeId=" .. placeId .. "&gameInstanceId=" .. jobId)
+		end
+		local ok4 = pcall(function() TeleportService:TeleportToPlaceInstance(placeId, jobId, LP) end)
+		if not ok4 then ui.Notify("Could not join. If it is a different game, the join link was copied to your clipboard", false) end
+	end)
+end
+-- Player Lookup: search any Roblox player by username or display name, see their profile and act on them
+ui.PL = { conns = {} }
+function ui.PL.Http(url)
+	local ok, r = pcall(function() return game:GetService("HttpService"):JSONDecode(game:HttpGet(url)) end)
+	return ok and r or nil
+end
+function ui.PL.Stop()
+	local PL = ui.PL
+	for _, c in ipairs(PL.conns) do pcall(function() c:Disconnect() end) end
+	PL.conns, PL.following, PL.spectating, PL.flinging = {}, nil, nil, false
+	local h = Hum()
+	if h and Camera.CameraSubject ~= h then Camera.CameraSubject = h end
+end
+function ui.PL.Destroy()
+	ui.PL.Stop()
+	if ui.PL.win then ui.PL.win:Destroy(); ui.PL.win = nil end
+end
+function ui.PL.Btn(parent, text, fn, order)
+	local b = New("TextButton", { Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = text, Font = FONT, TextSize = 13, TextColor3 = WHITE, LayoutOrder = order }, parent)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+	b.MouseEnter:Connect(function() b.BackgroundColor3 = C_ROWHOV end)
+	b.MouseLeave:Connect(function() b.BackgroundColor3 = C_ROW end)
+	b.MouseButton1Click:Connect(function() Safe(fn, b) end)
+	return b
+end
+function ui.PL.Thumb(img, id, big)
+	task.spawn(function()
+		local ok, url = pcall(function() return Players:GetUserThumbnailAsync(id, big and Enum.ThumbnailType.AvatarBust or Enum.ThumbnailType.HeadShot, big and Enum.ThumbnailSize.Size150x150 or Enum.ThumbnailSize.Size100x100) end)
+		if ok and img.Parent then img.Image = url end
+	end)
+end
+function ui.PL.Copy(text, what)
+	if setclipboard then pcall(setclipboard, text); ui.Notify(what .. " copied", true) else ui.Notify("Your executor can't copy to the clipboard", false) end
+end
+function ui.PL.Actions(u)
+	local PL = ui.PL
+	for _, c in ipairs(PL.acts:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+	local p = Players:GetPlayerByUserId(u.id)
+	local n = 0
+	local function add(text, fn) n += 1; return ui.PL.Btn(PL.acts, text, fn, n) end
+	add("Join Their Server", function() ui.JoinPlayer({ Values = { Username = u.name } }) end)
+	if p and p ~= LP then
+		add("Teleport To", function()
+			local tr, r = p.Character and p.Character:FindFirstChild("HumanoidRootPart"), Root()
+			if tr and r then r.CFrame = tr.CFrame * CFrame.new(0, 0, 3) else ui.Notify("They have no character right now", false) end
+		end)
+		local fb = add(PL.following == p and "Stop Following" or "Follow", function(b)
+			if PL.following == p then
+				PL.following = nil; b.Text = "Follow"
+				local h, r = Hum(), Root(); if h and r then h:MoveTo(r.Position) end
+				return
+			end
+			PL.following = p; b.Text = "Stop Following"
+			local c = Conn(RunService.Heartbeat, function()
+				if PL.following ~= p then return end
+				local tr, h = p.Character and p.Character:FindFirstChild("HumanoidRootPart"), Hum()
+				if tr and h then h:MoveTo(tr.Position) end
+			end)
+			table.insert(PL.conns, c)
+		end)
+		add(PL.spectating == p and "Stop Spectating" or "Spectate", function(b)
+			if PL.spectating == p then
+				PL.spectating = nil; b.Text = "Spectate"
+				local h = Hum(); if h then Camera.CameraSubject = h end
+				return
+			end
+			local th = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+			if not th then ui.Notify("They have no character right now", false) return end
+			PL.spectating = p; b.Text = "Stop Spectating"
+			Camera.CameraSubject = th
+		end)
+		add("Fling", function()
+			if PL.flinging then return end
+			local tr, r = p.Character and p.Character:FindFirstChild("HumanoidRootPart"), Root()
+			if not tr or not r then ui.Notify("They have no character right now", false) return end
+			PL.flinging = true
+			local home = r.CFrame
+			local t0 = os.clock()
+			local c1, c2
+			c1 = Conn(RunService.Heartbeat, function()
+				local t, rr = p.Character and p.Character:FindFirstChild("HumanoidRootPart"), Root()
+				if not t or not rr or os.clock() - t0 > 2.5 then return end
+				rr.CFrame = t.CFrame
+				rr.AssemblyLinearVelocity = Vector3.new(1e5, 1e5, 1e5)
+				rr.AssemblyAngularVelocity = Vector3.new(1e5, 1e5, 1e5)
+			end)
+			c2 = Conn(RunService.RenderStepped, function()
+				local rr = Root()
+				if rr and os.clock() - t0 <= 2.5 then rr.AssemblyLinearVelocity = Vector3.zero; rr.AssemblyAngularVelocity = Vector3.zero end
+			end)
+			task.delay(2.6, function()
+				c1:Disconnect(); c2:Disconnect()
+				local rr = Root()
+				if rr then rr.AssemblyLinearVelocity = Vector3.zero; rr.AssemblyAngularVelocity = Vector3.zero; rr.CFrame = home end
+				PL.flinging = false
+			end)
+		end)
+	end
+	add("Copy Username", function() ui.PL.Copy(u.name, "Username") end)
+	add("Copy User ID", function() ui.PL.Copy(tostring(u.id), "User ID") end)
+	add("Copy Profile Link", function() ui.PL.Copy("https://www.roblox.com/users/" .. u.id .. "/profile", "Profile link") end)
+end
+function ui.PL.Select(u)
+	local PL = ui.PL
+	PL.sel = u
+	PL.dn.Text = u.display or u.name
+	PL.un.Text = "@" .. u.name .. (u.verified and "  (verified)" or "")
+	PL.info.Text = "Loading..."
+	PL.av.Image = ""
+	ui.PL.Thumb(PL.av, u.id, true)
+	ui.PL.Actions(u)
+	task.spawn(function()
+		local HS = "https://%s.roblox.com/v1/users/%d"
+		local d = ui.PL.Http(string.format(HS, "users", u.id)) or {}
+		local fr = ui.PL.Http("https://friends.roblox.com/v1/users/" .. u.id .. "/friends/count") or {}
+		local fo = ui.PL.Http("https://friends.roblox.com/v1/users/" .. u.id .. "/followers/count") or {}
+		local fg = ui.PL.Http("https://friends.roblox.com/v1/users/" .. u.id .. "/followings/count") or {}
+		if PL.sel ~= u or not PL.info.Parent then return end
+		local lines = { "<b>User ID</b>  " .. u.id }
+		if d.created then
+			local ok, dt = pcall(function() return DateTime.fromIsoDate(d.created) end)
+			if ok and dt then
+				lines[#lines + 1] = "<b>Joined</b>  " .. dt:FormatUniversalTime("LL", "en-us") .. "  (" .. math.floor((os.time() - dt.UnixTimestamp) / 86400) .. " days old)"
+			end
+		end
+		lines[#lines + 1] = "<b>Friends</b>  " .. tostring(fr.count or "?") .. "    <b>Followers</b>  " .. tostring(fo.count or "?") .. "    <b>Following</b>  " .. tostring(fg.count or "?")
+		if d.isBanned then lines[#lines + 1] = "<b>Banned</b>  yes" end
+		local p = Players:GetPlayerByUserId(u.id)
+		if p then
+			local h = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+			local tr, r = p.Character and p.Character:FindFirstChild("HumanoidRootPart"), Root()
+			local extra = "<b>Status</b>  in your server"
+			if h then extra ..= "  -  " .. math.floor(h.Health) .. " HP" end
+			if tr and r then extra ..= "  -  " .. math.floor((tr.Position - r.Position).Magnitude) .. " studs away" end
+			lines[#lines + 1] = extra
+		else
+			lines[#lines + 1] = "<b>Status</b>  not in your server"
+		end
+		if d.description and d.description ~= "" then
+			local desc = d.description:gsub("[<>&]", ""):gsub("%s+", " ")
+			lines[#lines + 1] = "<b>About</b>  " .. string.sub(desc, 1, 160)
+		end
+		PL.info.Text = table.concat(lines, "\n")
+	end)
+end
+function ui.PL.Row(u, tag)
+	local PL = ui.PL
+	local b = New("TextButton", { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = #PL.list:GetChildren() }, PL.list)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+	local img = New("ImageLabel", { Position = UDim2.fromOffset(6, 5), Size = UDim2.fromOffset(36, 36), BackgroundColor3 = C_HEAD, BorderSizePixel = 0 }, b)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, img)
+	ui.PL.Thumb(img, u.id, false)
+	New("TextLabel", { Position = UDim2.fromOffset(50, 6), Size = UDim2.new(1, -56, 0, 18), BackgroundTransparency = 1, Text = u.display or u.name, Font = FONT_B, TextSize = 13, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, b)
+	New("TextLabel", { Position = UDim2.fromOffset(50, 24), Size = UDim2.new(1, -56, 0, 16), BackgroundTransparency = 1, Text = "@" .. u.name .. (tag and ("  -  " .. tag) or ""), Font = FONT, TextSize = 11, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, b)
+	b.MouseEnter:Connect(function() b.BackgroundColor3 = C_ROWHOV end)
+	b.MouseLeave:Connect(function() b.BackgroundColor3 = C_ROW end)
+	b.MouseButton1Click:Connect(function() ui.PL.Select(u) end)
+end
+function ui.PL.Search(q)
+	local PL = ui.PL
+	q = tostring(q or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	for _, c in ipairs(PL.list:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+	if q == "" then return end
+	local seen = {}
+	local lq = q:lower()
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Name:lower():find(lq, 1, true) or p.DisplayName:lower():find(lq, 1, true) then
+			seen[p.UserId] = true
+			ui.PL.Row({ id = p.UserId, name = p.Name, display = p.DisplayName }, "in your server")
+		end
+	end
+	PL.status.Text = "Searching..."
+	local my = os.clock(); PL.stamp = my
+	task.spawn(function()
+		local found = {}
+		local ok, uid = pcall(function() return Players:GetUserIdFromNameAsync(q) end)
+		if ok and uid and not seen[uid] then
+			seen[uid] = true
+			found[#found + 1] = { id = uid, name = q, display = q }
+		end
+		local res = ui.PL.Http("https://users.roblox.com/v1/users/search?limit=10&keyword=" .. game:GetService("HttpService"):UrlEncode(q))
+		if res and res.data then
+			for _, d in ipairs(res.data) do
+				if not seen[d.id] then
+					seen[d.id] = true
+					found[#found + 1] = { id = d.id, name = d.name, display = d.displayName, verified = d.hasVerifiedBadge }
+				end
+			end
+		end
+		if PL.stamp ~= my or not PL.list.Parent then return end
+		for _, u in ipairs(found) do ui.PL.Row(u) end
+		PL.status.Text = (#PL.list:GetChildren() - 1 <= 0) and "No players found" or ""
+	end)
+end
+function ui.PL.Build()
+	local PL = ui.PL
+	if PL.win then return end
+	local vp = Camera.ViewportSize
+	if vp.X < 400 then vp = Vector2.new(1280, 720) end
+	local W, H = math.min(600, vp.X - 20), math.min(420, vp.Y - 30)
+	local BG = Color3.fromRGB(18, 18, 25)
+	local win = New("Frame", { Name = "ZenithLookup", Size = UDim2.fromOffset(W, H), Position = UDim2.fromOffset((vp.X - W) / 2, (vp.Y - H) / 2), BackgroundColor3 = BG, BorderSizePixel = 0, ZIndex = 60, ClipsDescendants = true }, ui.Gui)
+	PL.win = win
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, win)
+	local stroke = New("UIStroke", { Thickness = 1.5, Transparency = 0.35 }, win)
+	AddPainter(stroke, function() stroke.Color = Accent(0.2) end)
+	local bar = New("TextButton", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0, AutoButtonColor = false, Text = "" }, win)
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, bar)
+	New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0 }, bar)
+	New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(0.6, 0, 1, 0), BackgroundTransparency = 1, Text = "Player Lookup", Font = FONT_B, TextSize = 16, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
+	local x = New("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(24, 24), BackgroundTransparency = 1, Text = "X", Font = FONT_B, TextSize = 14, TextColor3 = C_LIGHT }, bar)
+	x.MouseButton1Click:Connect(function() if PL.mod then SetEnabled(PL.mod, false) else ui.PL.Destroy() end end)
+	bar.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then ui.BeginDrag(win, i) end
+	end)
+	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, bar)
+	ui.StyleLine(line, 0, bar)
+	-- left: search + results
+	local LW = math.floor(W * 0.4)
+	local box = New("TextBox", { Position = UDim2.fromOffset(10, 48), Size = UDim2.new(0, LW - 20, 0, 30), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, ClearTextOnFocus = false, Font = FONT, TextSize = 13, TextColor3 = WHITE, PlaceholderText = "Username or display name", PlaceholderColor3 = C_DIM, Text = "", TextXAlignment = Enum.TextXAlignment.Left }, win)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, box)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, box)
+	box.FocusLost:Connect(function(enter) if enter then ui.PL.Search(box.Text) end end)
+	PL.status = New("TextLabel", { Position = UDim2.fromOffset(10, 82), Size = UDim2.new(0, LW - 20, 0, 14), BackgroundTransparency = 1, Text = "Press enter to search", Font = FONT, TextSize = 11, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left }, win)
+	PL.list = New("ScrollingFrame", { Position = UDim2.fromOffset(10, 100), Size = UDim2.new(0, LW - 20, 1, -110), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, win)
+	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, PL.list)
+	New("Frame", { Position = UDim2.fromOffset(LW, 46), Size = UDim2.new(0, 1, 1, -56), BackgroundColor3 = Color3.fromRGB(38, 38, 50), BorderSizePixel = 0 }, win)
+	-- right: profile
+	local R = New("Frame", { Position = UDim2.fromOffset(LW + 10, 46), Size = UDim2.new(1, -(LW + 20), 1, -56), BackgroundTransparency = 1 }, win)
+	PL.av = New("ImageLabel", { Size = UDim2.fromOffset(72, 72), BackgroundColor3 = C_HEAD, BorderSizePixel = 0 }, R)
+	New("UICorner", { CornerRadius = UDim.new(0, 8) }, PL.av)
+	PL.dn = New("TextLabel", { Position = UDim2.fromOffset(82, 8), Size = UDim2.new(1, -82, 0, 24), BackgroundTransparency = 1, Text = "No player selected", Font = FONT_B, TextSize = 18, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, R)
+	PL.un = New("TextLabel", { Position = UDim2.fromOffset(82, 34), Size = UDim2.new(1, -82, 0, 18), BackgroundTransparency = 1, Text = "Search for someone on the left", Font = FONT, TextSize = 12, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, R)
+	PL.info = New("TextLabel", { Position = UDim2.fromOffset(0, 80), Size = UDim2.new(1, 0, 0, 96), BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 12, TextColor3 = C_LIGHT, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true, RichText = true }, R)
+	PL.acts = New("ScrollingFrame", { Position = UDim2.fromOffset(0, 180), Size = UDim2.new(1, 0, 1, -180), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, R)
+	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, PL.acts)
+end
+Module{ Name = "PlayerLookup", Category = "Utility", Desc = "Opens a window where you can search any Roblox player by username or display name, see their profile, and join their server. For players in your server you can also teleport, follow, spectate and fling them.",
+	OnEnable = function(m) ui.PL.mod = m; ui.PL.Build() end,
+	OnDisable = function(m) ui.PL.Destroy() end }
+
+Module{ Name = "PlayerJoiner", Category = "Utility", Desc = "Type a player's username and press Join to go to the game and server they are in. Needs them to be online with joins allowed.", Passive = true,
+	Settings = {
+		{ Name = "Username", Type = "Text", Default = "", Desc = "The Roblox username of the player to join.", Placeholder = "username" },
+		Button("Join Player", "Teleports you to the server this player is in.", function(m) ui.JoinPlayer(m) end),
+	} }
+
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
 	Settings = { Mode("Server", { "Random", "Smallest", "Largest" }, "Random", "Which server to join: any other server, the emptiest one, or the fullest one that still has room.") },
 	Action = function(m)
@@ -2352,7 +2696,7 @@ Module{ Name = "Freefall", Category = "Player", Desc = "Plays your falling anima
 			local h = c and c:FindFirstChildOfClass("Humanoid")
 			local an = h and h:FindFirstChildOfClass("Animator")
 			if not an then return end
-			if not m._track or m._track.Parent == nil or m._owner ~= c then
+			if not m._track or m._owner ~= c then
 				if m._track then pcall(function() m._track:Stop(0) end) end
 				local id
 				local sc = c:FindFirstChild("Animate")
@@ -2530,6 +2874,8 @@ do
 								m.Values[st.Name] = v
 							elseif st.Type == "Mode" and type(v) == "string" then
 								if type(st.Options) == "function" or table.find(st.Options, v) then m.Values[st.Name] = v end
+							elseif st.Type == "Text" and type(v) == "string" then
+								m.Values[st.Name] = v
 							elseif st.Type == "Color" and typeof(v) == "Color3" then
 								m.Values[st.Name] = v
 							end
@@ -3345,6 +3691,16 @@ local function ButtonRow(m, s, parent, order)
 	return row
 end
 
+function ui.TextRow(m, s, parent, order)
+	local row = SettingButton(parent, order)
+	SettingLabel(row, s.Name)
+	local box = New("TextBox", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.new(0.5, 0, 1, -6), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, ClearTextOnFocus = false, Font = FONT, TextSize = 12, TextColor3 = WHITE, PlaceholderText = s.Placeholder or "type here", PlaceholderColor3 = C_DIM, Text = tostring(m.Values[s.Name] or ""), TextXAlignment = Enum.TextXAlignment.Left, ClipsDescendants = true }, row)
+	New("UICorner", { CornerRadius = UDim.new(0, 4) }, box)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, box)
+	box.FocusLost:Connect(function() m.Values[s.Name] = box.Text end)
+	return row
+end
+
 local function BindRow(m, parent, order)
 	local row = SettingButton(parent, order)
 	SettingLabel(row, "Bind")
@@ -3413,6 +3769,7 @@ local function BuildModuleRow(m, parent, showCat, idx, zref)
 		elseif s.Type == "Mode" then row = ModeRow(m, s, setFrame, rows)
 		elseif s.Type == "Color" then row = ColorRow(m, s, setFrame, rows)
 		elseif s.Type == "Button" then row = ButtonRow(m, s, setFrame, rows)
+		elseif s.Type == "Text" then row = ui.TextRow(m, s, setFrame, rows)
 		else row = ToggleRow(m, s, setFrame, rows) end
 		ui.AddHover(row, function() return ui.HoverText(m.Name .. ": " .. s.Name, s.Desc) end, zref)
 	end
