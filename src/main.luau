@@ -248,13 +248,35 @@ function ui.Splash()
 	logo.AnchorPoint = Vector2.new(0.5, 0.5)
 	logo.Position = UDim2.new(0.5, 0, 0.5, -8)
 	New("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0), Size = UDim2.fromOffset(300, 18), BackgroundTransparency = 1, Font = FONT, TextSize = 13, TextColor3 = C_DIM, Text = "ZENITH CLIENT  " .. VERSION }, cg)
-	local t1 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) })
-	t1:Play()
-	task.delay(2.2, function()
-		if not cg.Parent then return end
-		local t2 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { GroupTransparency = 1 })
-		t2:Play()
-		t2.Completed:Connect(function() cg:Destroy() end)
+	-- everything else stays hidden (shrunk to nothing) until the logo shoots outward into it
+	local targets = {}
+	for _, f in ipairs({ ui.TopRight, ui.Gui:FindFirstChild("Info") or false, ui.Gui:FindFirstChild("ZenithTabGui") or false }) do
+		if f then
+			targets[#targets + 1] = { f = f, pos = f.Position, us = New("UIScale", { Name = "ZSplash", Scale = 0.001 }, f) }
+		end
+	end
+	local lus = New("UIScale", { Scale = 1 }, cg)
+	TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }):Play()
+	task.delay(2, function()
+		local vp = ui.Gui.AbsoluteSize
+		if cg.Parent then
+			TweenService:Create(lus, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1.5 }):Play()
+			local t2 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 1 })
+			t2:Play()
+			t2.Completed:Connect(function() cg:Destroy() end)
+		end
+		for i, t in ipairs(targets) do
+			task.delay((i - 1) * 0.1, function()
+				local f = t.f
+				if not f.Parent then return end
+				f.Position = UDim2.fromOffset(vp.X / 2, vp.Y * 0.45)
+				local info = TweenInfo.new(0.8, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+				TweenService:Create(t.us, info, { Scale = 1 }):Play()
+				local tw = TweenService:Create(f, info, { Position = t.pos })
+				tw.Completed:Connect(function() f.Position = t.pos; t.us:Destroy() end)
+				tw:Play()
+			end)
+		end
 	end)
 end
 
@@ -2298,18 +2320,15 @@ Module{ Name = "HappyModFlight", Category = "Movement", Desc = "The classic old-
 				r.CFrame = CFrame.new(r.Position + Vector3.new(0, 2, 0)) * CFrame.Angles(0, math.atan2(-look.X, -look.Z), 0)
 			end
 		end
-		if V["Splash Sound"] and m._flying then
-			if not m._snd then
-				m._snd = Instance.new("Sound")
-				m._snd.SoundId = "rbxasset://sounds/impact_water.mp3"
-				m._snd.Volume = 0.6
-				m._snd.Looped = true
-				m._snd.Parent = r
-			end
-			m._snd.PlaybackSpeed = 1.3 + math.random() * 0.4
-			if not m._snd.IsPlaying then m._snd:Play() end
-		elseif m._snd and m._snd.IsPlaying then
-			m._snd:Stop()
+		if V["Splash Sound"] and m._flying and os.clock() - (m._sndT or 0) > 0.06 then
+			m._sndT = os.clock()
+			local sd = Instance.new("Sound")
+			sd.SoundId = "rbxasset://sounds/impact_water.mp3"
+			sd.Volume = 0.5
+			sd.PlaybackSpeed = 1 + math.random() * 0.5
+			sd.Parent = r
+			sd:Play()
+			game:GetService("Debris"):AddItem(sd, 1.5)
 		end
 	end,
 	OnDisable = function(m)
@@ -2345,14 +2364,11 @@ Module{ Name = "Freefall", Category = "Player", Desc = "Plays your falling anima
 				anim.AnimationId = id
 				local ok, tr = pcall(function() return an:LoadAnimation(anim) end)
 				if not ok then return end
-				tr.Priority = Enum.AnimationPriority.Action4
+				tr.Priority = Enum.AnimationPriority.Action
 				tr.Looped = true
 				m._track, m._owner = tr, c
 			end
 			if not m._track.IsPlaying then m._track:Play(0.1) end
-			for _, t in ipairs(an:GetPlayingAnimationTracks()) do
-				if t ~= m._track and t.Priority ~= Enum.AnimationPriority.Action4 then t:AdjustWeight(0.001, 0) end
-			end
 		end)
 	end,
 	OnDisable = function(m)
@@ -3887,10 +3903,9 @@ function ui.BuildWindow()
 	AddPainter(stroke, function() stroke.Color = Accent(0.2) end)
 	-- title bar
 	local bar = New("TextButton", { Size = UDim2.new(1, 0, 0, 46), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0, AutoButtonColor = false, Text = "" }, win)
-	local dot = New("Frame", { Position = UDim2.fromOffset(14, 14), Size = UDim2.fromOffset(18, 18), BorderSizePixel = 0 }, bar)
-	New("UICorner", { CornerRadius = UDim.new(1, 0) }, dot)
-	AddPainter(dot, function() dot.BackgroundColor3 = Accent(0) end)
-	local title = New("TextLabel", { Position = UDim2.fromOffset(40, 0), Size = UDim2.new(0, 90, 1, -2), BackgroundTransparency = 1, Text = "Zenith", Font = FONT_B, TextSize = 19, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, bar)
+	New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0 }, bar)
+	local title = New("TextLabel", { Position = UDim2.fromOffset(16, 0), Size = UDim2.new(0, 90, 1, -2), BackgroundTransparency = 1, Text = "Zenith", Font = FONT_B, TextSize = 19, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
 	ui.WinCrumb = New("TextLabel", { Position = UDim2.fromOffset(SW + 14, 0), Size = UDim2.new(1, -(SW + 24), 1, -2), BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 13, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, bar)
 	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, bar)
 	ui.StyleLine(line, 0, bar)
@@ -3902,6 +3917,9 @@ function ui.BuildWindow()
 	end)
 	-- sidebar
 	local sideBg = New("Frame", { Position = UDim2.fromOffset(0, 46), Size = UDim2.new(0, SW, 1, -46), BackgroundColor3 = Color3.fromRGB(14, 14, 20), BorderSizePixel = 0 }, win)
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, sideBg)
+	New("Frame", { Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = Color3.fromRGB(14, 14, 20), BorderSizePixel = 0 }, sideBg)
+	New("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, 12, 1, 0), BackgroundColor3 = Color3.fromRGB(14, 14, 20), BorderSizePixel = 0 }, sideBg)
 	New("TextLabel", { Position = UDim2.fromOffset(16, 10), Size = UDim2.new(1, -16, 0, 14), BackgroundTransparency = 1, Text = "CATEGORIES", Font = FONT_B, TextSize = 10, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left }, sideBg)
 	local side = New("ScrollingFrame", { Position = UDim2.fromOffset(0, 30), Size = UDim2.new(1, 0, 1, -62), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, sideBg)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, side)
@@ -3910,7 +3928,8 @@ function ui.BuildWindow()
 	New("Frame", { Position = UDim2.new(1, -1, 0, 0), Size = UDim2.new(0, 1, 1, 0), BackgroundColor3 = Color3.fromRGB(34, 34, 46), BorderSizePixel = 0 }, sideBg)
 	-- module list
 	ui.WinBody = New("ScrollingFrame", { Position = UDim2.fromOffset(SW, 46), Size = UDim2.new(1, -SW, 1, -46), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, win)
-	New("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12), PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10) }, ui.WinBody)
+	ui.WinHolder = New("Frame", { Position = UDim2.fromOffset(10, 10), Size = UDim2.new(1, -26, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 }, ui.WinBody)
+	New("UIPadding", { PaddingBottom = UDim.new(0, 10) }, ui.WinHolder)
 	ui.WinCounts = {}
 	for i, cat in ipairs(Categories) do
 		local b = New("TextButton", { Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Color3.fromRGB(26, 26, 36), BackgroundTransparency = 1, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = i }, side)
@@ -3958,7 +3977,7 @@ end
 function ui.WinSelect(i)
 	ui.WinCat = i
 	for j, c in ipairs(PanelContents) do
-		if j == i then c.Parent = ui.WinBody; c.Visible = true; c.LayoutOrder = 1
+		if j == i then c.Parent = ui.WinHolder; c.Visible = true; c.LayoutOrder = 1
 		else c.Parent = PanelFrames[j]; c.LayoutOrder = 2 end
 	end
 	ui.WinBody.CanvasPosition = Vector2.new()
