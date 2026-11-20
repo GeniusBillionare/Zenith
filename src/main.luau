@@ -362,6 +362,7 @@ local function Module(def)
 end
 local function Hook(m, sig, fn) table.insert(m._conns, sig:Connect(fn)) end
 
+ui.Settle = { Fly = true, Jetpack = true, HappyModFlight = true, Speed = true, Spider = true, Swim = true }
 local function SetEnabled(m, state, silent)
 	if m.Action or m.Passive or m.Enabled == state then return end
 	m.Enabled = state
@@ -371,6 +372,13 @@ local function SetEnabled(m, state, silent)
 		for _, c in ipairs(m._conns) do c:Disconnect() end
 		table.clear(m._conns)
 		if m.OnDisable then Safe(m.OnDisable, m) end
+		if ui.Settle[m.Name] then
+			local r = Root()
+			if r then
+				local v = r.AssemblyLinearVelocity
+				r.AssemblyLinearVelocity = Vector3.new(0, math.min(v.Y, 20), 0)
+			end
+		end
 	end
 	if ui.OnToggle then ui.OnToggle(m, silent) end
 end
@@ -737,59 +745,161 @@ function ui.SwimPoseOff(m)
 	local h = Hum()
 	if h then h.AutoRotate = ui.Def.AutoRotate ~= false end
 end
-Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the air as if it were water. Space swims up, Left Ctrl swims down.",
-	Settings = { Slider("Speed", 8, 100, 1, 28, "How fast you swim in any direction.") },
+Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the air as if it were water. Space swims up, Left Ctrl swims down. With Assist Only it just fixes swimming in the air when a game or another script already has you in the swim state.",
+	Settings = {
+		Slider("Speed", 8, 100, 1, 28, "How fast you swim in any direction."),
+		Toggle("Assist Only", false, "Does not force swimming or remove gravity. It only takes over, and swims you properly, while you are already swimming in the air."),
+	},
 	OnEnable = function(m)
-		workspace.Gravity = 0
+		m._t, m._v = nil, nil
+		if not m.Values["Assist Only"] then workspace.Gravity = 0 end
 		if UIS.TouchEnabled then m._tUp, m._tDn = ui.TouchBtn("UP", 1), ui.TouchBtn("DOWN", 0) end
 	end,
 	OnDisable = function(m)
 		ui.SwimPoseOff(m)
 		ui.DropTouch(m._tUp); ui.DropTouch(m._tDn); m._tUp, m._tDn = nil, nil
 		workspace.Gravity = ui.Def.Gravity or 196.2
-		local h = Hum()
-		if h then h:ChangeState(Enum.HumanoidStateType.GettingUp) end
+		local r, h = Root(), Hum()
+		if r then r.AssemblyLinearVelocity = Vector3.zero; r.AssemblyAngularVelocity = Vector3.zero end
+		if h and not m.Values["Assist Only"] then h:ChangeState(Enum.HumanoidStateType.GettingUp) end
 	end,
-	OnTick = function(m)
-		local r, h = Root(), Hum(); if not r or not h then return end
-		local speed = m.Values.Speed
-		workspace.Gravity = 0
-		h:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
-		h:ChangeState(Enum.HumanoidStateType.Swimming)
-		h.WalkSpeed = speed
-		local v = r.AssemblyLinearVelocity
-		local tgt = ui.SwimDir(h) * speed
-		if Down(Enum.KeyCode.Space) or (m._tUp and m._tUp.held) then tgt += Vector3.new(0, speed, 0)
-		elseif ui.Lower(m) then tgt -= Vector3.new(0, speed, 0) end
-		if tgt.Magnitude > speed then tgt = tgt.Unit * speed end
-		r.AssemblyLinearVelocity = v:Lerp(tgt, 0.35)
-		ui.SwimPose(m, h, r, tgt)
-	end }
-
-Module{ Name = "SwimAssist", Category = "Movement", Desc = "Fixes swimming in the air when another script or game puts you in the swim state. Instead of flinging you in one direction, you swim where you point and stop when you let go.",
-	Settings = {
-		Slider("Speed", 5, 100, 1, 24, "How fast you swim."),
-		Slider("Smoothing", 0.05, 1, 0.05, 0.35, "How quickly you reach full speed and stop. Lower is floatier."),
-		Toggle("Only In Air", true, "Leaves real water alone and only takes over when you are swimming in the air."),
-		Toggle("Vertical Keys", true, "Space swims up and Left Ctrl swims down while assisting."),
-	},
 	OnTick = function(m)
 		local r, h = Root(), Hum(); if not r or not h then return end
 		local V = m.Values
-		if h:GetState() ~= Enum.HumanoidStateType.Swimming or (V["Only In Air"] and ui.InWater(r)) then
-			if m._sw then ui.SwimPoseOff(m) end
-			return
+		local now = os.clock()
+		local dt = math.min(now - (m._t or now), 0.1)
+		m._t = now
+		if V["Assist Only"] then
+			workspace.Gravity = ui.Def.Gravity or 196.2
+			if h:GetState() ~= Enum.HumanoidStateType.Swimming or ui.InWater(r) then
+				if m._sw then ui.SwimPoseOff(m) end
+				m._v = nil
+				return
+			end
+		else
+			workspace.Gravity = 0
+			h:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
+			h:ChangeState(Enum.HumanoidStateType.Swimming)
 		end
-		local tgt = ui.SwimDir(h) * V.Speed
-		if V["Vertical Keys"] then
-			if Down(Enum.KeyCode.Space) or h.Jump then tgt += Vector3.new(0, V.Speed, 0)
-			elseif ui.Lower(m) then tgt -= Vector3.new(0, V.Speed, 0) end
-		end
-		if tgt.Magnitude > V.Speed then tgt = tgt.Unit * V.Speed end
-		r.AssemblyLinearVelocity = r.AssemblyLinearVelocity:Lerp(tgt, V.Smoothing)
+		local speed = V.Speed
+		local tgt = ui.SwimDir(h) * speed
+		if Down(Enum.KeyCode.Space) or (m._tUp and m._tUp.held) or (V["Assist Only"] and h.Jump) then tgt += Vector3.new(0, speed, 0)
+		elseif ui.Lower(m) then tgt -= Vector3.new(0, speed, 0) end
+		if tgt.Magnitude > speed then tgt = tgt.Unit * speed end
+		-- moved by CFrame, so nothing is left in your velocity when you stop or turn the module off
+		m._v = (m._v or Vector3.zero):Lerp(tgt, 0.35)
+		r.CFrame += m._v * dt
+		r.AssemblyLinearVelocity = Vector3.zero
 		ui.SwimPose(m, h, r, tgt)
+	end }
+
+-- Gravity Shift: aim at any surface and press the key. That surface becomes the floor, so you can walk on walls and ceilings.
+function ui.GSOff(m)
+	m._on = false
+	m._up, m._tup = Vector3.yAxis, Vector3.yAxis
+	workspace.Gravity = ui.Def.Gravity or 196.2
+	local r, h = Root(), Hum()
+	if h then h.PlatformStand = false end
+	if r then
+		local lv = r.CFrame.LookVector
+		local fwd = Vector3.new(lv.X, 0, lv.Z)
+		if fwd.Magnitude < 0.1 then fwd = Vector3.new(0, 0, -1) end
+		r.CFrame = CFrame.lookAt(r.Position + Vector3.new(0, 1, 0), r.Position + Vector3.new(0, 1, 0) + fwd)
+		r.AssemblyAngularVelocity = Vector3.zero
+		local v = r.AssemblyLinearVelocity
+		r.AssemblyLinearVelocity = Vector3.new(v.X * 0.3, math.min(v.Y, 10), v.Z * 0.3)
+	end
+end
+function ui.GSToggle(m)
+	if m._on then ui.GSOff(m) ui.Notify("Gravity Shift: back to normal", true) return end
+	local res = workspace:Raycast(Camera.CFrame.Position, Camera.CFrame.LookVector * 500, RayParams())
+	if not res then ui.Notify("Gravity Shift: aim at a surface first", false) return end
+	m._tup = res.Normal
+	m._on = true
+	ui.Notify("Gravity Shift: new floor set", true)
+end
+Module{ Name = "GravityShift", Category = "Movement", Desc = "Aim at a wall, floor or ceiling and press the key. That surface becomes your floor and you walk on it. Press the key again to go back to normal.",
+	Settings = {
+		Toggle("Use Key", true, "Turns the shift key on or off. Turn it off if it clashes with your keybinds. The phone button still works."),
+		Mode("Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "G", "The key that shifts gravity toward the surface you are aiming at, and back."),
+		Slider("Gravity", 20, 400, 5, 196, "How hard you are pulled toward your new floor."),
+		Slider("Walk Speed", 8, 60, 1, 24, "How fast you walk along the new floor."),
+		Slider("Jump Power", 10, 100, 1, 50, "How hard you jump away from the new floor."),
+		Toggle("Tilt Camera", true, "Rolls your camera so the new floor is always at the bottom of your screen."),
+	},
+	OnEnable = function(m)
+		m._up, m._tup, m._on = Vector3.yAxis, Vector3.yAxis, false
+		Hook(m, UIS.InputBegan, function(i, gp)
+			if gp or Typing() or not m.Values["Use Key"] or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+			local ok, k = pcall(function() return Enum.KeyCode[m.Values.Key] end)
+			if ok and i.KeyCode == k then ui.GSToggle(m) end
+		end)
+		if UIS.TouchEnabled then m._tBtn = ui.TouchBtn("SHIFT", 2) end
 	end,
-	OnDisable = function(m) ui.SwimPoseOff(m) end }
+	OnDisable = function(m)
+		ui.DropTouch(m._tBtn); m._tBtn = nil
+		if m._on then ui.GSOff(m) end
+	end,
+	OnTick = function(m)
+		if m._tBtn then
+			if m._tBtn.held and not m._tHeld then ui.GSToggle(m) end
+			m._tHeld = m._tBtn.held
+		end
+		if not m._on then return end
+		local r, h = Root(), Hum()
+		if not r or not h or h.Health <= 0 then ui.GSOff(m) return end
+		local V = m.Values
+		local now = os.clock()
+		local dt = math.min(now - (m._t or now), 0.1)
+		m._t = now
+		m._up = m._up:Lerp(m._tup, 0.2)
+		if m._up.Magnitude < 0.01 then m._up = m._tup end
+		local up = m._up.Unit
+		-- movement keys or the touch stick, laid onto the new floor
+		local mx = (Down(Enum.KeyCode.D) and 1 or 0) - (Down(Enum.KeyCode.A) and 1 or 0)
+		local my = (Down(Enum.KeyCode.W) and 1 or 0) - (Down(Enum.KeyCode.S) and 1 or 0)
+		if UIS.TouchEnabled then local mv = ui.MoveVec(); if mv.Magnitude > 0.1 then mx, my = mv.X, mv.Y end end
+		local cf = Camera.CFrame
+		local function flat(v) return v - up * v:Dot(up) end
+		local fwd, rgt = flat(cf.LookVector), flat(cf.RightVector)
+		if fwd.Magnitude < 0.2 then fwd = flat(cf.UpVector) end
+		fwd = fwd.Magnitude > 0 and fwd.Unit or Vector3.zero
+		rgt = rgt.Magnitude > 0 and rgt.Unit or Vector3.zero
+		local dir = fwd * my + rgt * mx
+		local moving = dir.Magnitude > 0.05
+		if moving then dir = dir.Unit end
+		local v = r.AssemblyLinearVelocity
+		local vUp = up * v:Dot(up)
+		local vPlane = v - vUp
+		vPlane = vPlane:Lerp(moving and dir * V["Walk Speed"] or Vector3.zero, 0.3)
+		local hit = workspace:Raycast(r.Position, -up * 3.6, RayParams())
+		workspace.Gravity = 0
+		h.PlatformStand = true
+		if hit and now > (m._airT or 0) then
+			vUp = Vector3.zero
+			r.CFrame = r.CFrame + up * math.clamp(3 - (hit.Position - r.Position):Dot(-up), -0.5, 0.5) * 0.5
+			if Down(Enum.KeyCode.Space) or h.Jump then vUp = up * V["Jump Power"]; m._airT = now + 0.25 end
+		else
+			vUp = vUp - up * V.Gravity * dt
+		end
+		r.AssemblyLinearVelocity = vPlane + vUp
+		local face = moving and dir or flat(r.CFrame.LookVector)
+		if face.Magnitude < 0.1 then face = fwd end
+		if face.Magnitude > 0.1 then
+			face = face.Unit
+			r.CFrame = CFrame.fromMatrix(r.Position, face:Cross(up).Unit, up, -face)
+		end
+		r.AssemblyAngularVelocity = Vector3.zero
+	end,
+	OnRender = function(m)
+		if not m._on or not m.Values["Tilt Camera"] then return end
+		local cf = Camera.CFrame
+		local look = cf.LookVector
+		local rgt = look:Cross(m._up)
+		if rgt.Magnitude < 0.05 then return end
+		rgt = rgt.Unit
+		Camera.CFrame = CFrame.fromMatrix(cf.Position, rgt, rgt:Cross(look), -look)
+	end }
 
 Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
 	Settings = {
@@ -1974,11 +2084,10 @@ local function HBRestorePart(part)
 	HB[part] = nil
 end
 local function HBRestoreAll() for part in pairs(HB) do HBRestorePart(part) end end
-Module{ Name = "Hitbox Expander", Category = "Combat", Desc = "Makes other players' hitboxes bigger on your client so they are easier to hit.",
+Module{ Name = "Hitbox Expander", Category = "Combat", Desc = "Makes other players' hitboxes bigger on your client so they are easier to hit. The bigger box is not drawn; use Hitbox Visualizer to see it. In Head mode the head itself grows, so Root is the invisible option.",
 	Settings = {
 		Mode("Part", { "Root", "Head" }, "Root", "Which part of each player gets enlarged."),
 		Slider("Size", 2, 40, 0.5, 8, "Width, height and depth of the enlarged hitbox in studs."),
-		Slider("Transparency", 0, 1, 0.05, 0.7, "How see-through the enlarged part is."),
 		Toggle("Team Check", true, D_TEAM),
 	},
 	OnDisable = function(m) m._part = nil; HBRestoreAll() end,
@@ -1996,7 +2105,6 @@ Module{ Name = "Hitbox Expander", Category = "Combat", Desc = "Makes other playe
 						HB[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, Massless = part.Massless }
 					end
 					part.Size = Vector3.new(V.Size, V.Size, V.Size)
-					part.Transparency = V.Transparency
 					part.CanCollide = false
 					part.Massless = true
 				end
@@ -2673,18 +2781,45 @@ function ui.GT.Show(list, stamp)
 		end
 	end
 end
-function ui.GT.Fetch(query)
+-- walks a decoded JSON reply and collects every table that matches (the reply's exact nesting can change)
+function ui.GT.Walk(t, out, pred, depth)
+	if type(t) ~= "table" or depth > 6 then return end
+	if pred(t) then out[#out + 1] = t return end
+	if #t > 0 then for _, v in ipairs(t) do ui.GT.Walk(v, out, pred, depth + 1) end
+	else for _, v in pairs(t) do ui.GT.Walk(v, out, pred, depth + 1) end end
+end
+function ui.GT.Games(res)
+	local raw, out, seen = {}, {}, {}
+	ui.GT.Walk(res, raw, function(t) return t.rootPlaceId ~= nil or (t.universeId ~= nil and t.name ~= nil and t.playerCount ~= nil) end, 0)
+	for _, g in ipairs(raw) do
+		local pid = g.rootPlaceId or g.placeId
+		if pid and not seen[pid] then
+			seen[pid] = true
+			out[#out + 1] = { placeId = pid, universeId = g.universeId, name = g.name or "Unknown", playerCount = g.playerCount, totalUpVotes = g.totalUpVotes, totalDownVotes = g.totalDownVotes }
+		end
+	end
+	return out
+end
+function ui.GT.Fetch(kind, arg)
 	local GT = ui.GT
 	local stamp = os.clock(); GT.stamp = stamp
 	GT.status.Text = "Loading..."
 	task.spawn(function()
-		local res = ui.PL.Http("https://games.roblox.com/v1/games/list?model.maxRows=36&" .. query)
+		local HS = game:GetService("HttpService")
+		local sid = HS:GenerateGUID(false)
+		local url
+		if kind == "search" then
+			url = "https://apis.roblox.com/search-api/omni-search?searchQuery=" .. HS:UrlEncode(arg) .. "&sessionId=" .. sid .. "&pageType=all"
+		else
+			url = "https://apis.roblox.com/explore-api/v1/get-sort-content?sessionId=" .. sid .. "&sortId=" .. HS:UrlEncode(tostring(arg))
+		end
+		local res = ui.PL.Http(url)
 		if GT.stamp ~= stamp then return end
-		if not res or not res.games then
-			if GT.status.Parent then GT.status.Text = "Could not load games. Your executor may be blocking web requests." end
+		if not res then
+			if GT.status.Parent then GT.status.Text = "Could not load games. Your executor may be blocking web requests, or Roblox changed this endpoint." end
 			return
 		end
-		ui.GT.Show(res.games, stamp)
+		ui.GT.Show(ui.GT.Games(res), stamp)
 	end)
 end
 function ui.GT.Build()
@@ -2714,7 +2849,7 @@ function ui.GT.Build()
 	New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, box)
 	box.FocusLost:Connect(function(enter)
 		if enter and box.Text:gsub("%s", "") ~= "" then
-			ui.GT.Fetch("model.keyword=" .. game:GetService("HttpService"):UrlEncode(box.Text))
+			ui.GT.Fetch("search", box.Text)
 		end
 	end)
 	local sorts = New("ScrollingFrame", { Position = UDim2.fromOffset(12, 84), Size = UDim2.new(1, -24, 0, 28), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X }, win)
@@ -2725,27 +2860,154 @@ function ui.GT.Build()
 	GT.status.ZIndex = 2
 	GT.status.Text = "Loading..."
 	task.spawn(function()
-		local res = ui.PL.Http("https://games.roblox.com/v1/games/sorts?gameSortsContext=GamesDefaultSorts")
+		local res = ui.PL.Http("https://apis.roblox.com/explore-api/v1/get-sorts?sessionId=" .. game:GetService("HttpService"):GenerateGUID(false))
 		if not GT.win or not sorts.Parent then return end
-		if not res or not res.sorts or #res.sorts == 0 then
+		local list = {}
+		if res then ui.GT.Walk(res, list, function(t) return t.sortId ~= nil and (t.sortDisplayName or t.displayName or t.name or t.sortName) ~= nil end, 0) end
+		if #list == 0 then
 			GT.status.Text = "Could not load the discovery page. You can still search."
 			return
 		end
-		local first
-		for i, s in ipairs(res.sorts) do
-			local nm = s.displayName or s.name
-			local b = New("TextButton", { Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = nm, Font = FONT_B, TextSize = 12, TextColor3 = WHITE, LayoutOrder = i }, sorts)
+		for i, srt in ipairs(list) do
+			local nm = srt.sortDisplayName or srt.displayName or srt.name or srt.sortName
+			local b = New("TextButton", { Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = tostring(nm), Font = FONT_B, TextSize = 12, TextColor3 = WHITE, LayoutOrder = i }, sorts)
 			New("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
 			New("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, b)
-			b.MouseButton1Click:Connect(function() box.Text = ""; ui.GT.Fetch("model.sortToken=" .. tostring(s.token)) end)
-			first = first or s
+			b.MouseButton1Click:Connect(function() box.Text = ""; ui.GT.Fetch("sort", srt.sortId) end)
 		end
-		if first then ui.GT.Fetch("model.sortToken=" .. tostring(first.token)) end
+		ui.GT.Fetch("sort", list[1].sortId)
 	end)
 end
 Module{ Name = "GameTeleporter", Category = "Utility", Desc = "Opens a window with the discovery page and a game search. Click any game to teleport straight into it without leaving.",
 	OnEnable = function(m) ui.GT.mod = m; ui.GT.Build() end,
 	OnDisable = function(m) ui.GT.Destroy() end }
+
+-- Telekinesis: you get a tool. Hold left click (or touch) on any loose part to lift it and move it with your cursor.
+ui.TK = {}
+function ui.TK.Key(name)
+	local ok, k = pcall(function() return Enum.KeyCode[name] end)
+	return ok and k or nil
+end
+function ui.TK.Claim()
+	pcall(function() sethiddenproperty(LP, "SimulationRadius", 1e9) end)
+	pcall(function() sethiddenproperty(LP, "MaximumSimulationRadius", 1e9) end)
+end
+function ui.TK.Pos()
+	if ui.Phone and ui.TouchPos then return ui.TouchPos end
+	return UIS:GetMouseLocation()
+end
+function ui.TK.Pick(m)
+	local mp = ui.TK.Pos()
+	local ray = Camera:ViewportPointToRay(mp.X, mp.Y)
+	local res = workspace:Raycast(ray.Origin, ray.Direction * m.Values.Reach, RayParams())
+	local part = res and res.Instance
+	if not part or not part:IsA("BasePart") then return nil end
+	local root = part.AssemblyRootPart or part
+	if root.Anchored then return nil end
+	if not m.Values["Grab Players"] then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Character and part:IsDescendantOf(p.Character) then return nil end
+		end
+	end
+	return root, (root.Position - ray.Origin).Magnitude
+end
+function ui.TK.Release(m)
+	local g = m._grab
+	if not g then return end
+	m._grab = nil
+	for _, o in ipairs({ g.ap, g.ao, g.a0, g.hl, g.anchor }) do pcall(function() o:Destroy() end) end
+	pcall(function() game:GetService("ContextActionService"):UnbindAction("ZenithTKWheel") end)
+end
+function ui.TK.Grab(m)
+	if m._grab then return end
+	local part, dist = ui.TK.Pick(m)
+	if not part then return false end
+	ui.TK.Claim()
+	local anchor = New("Part", { Name = "ZenithTK", Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, Transparency = 1, Size = Vector3.new(0.5, 0.5, 0.5), CFrame = part.CFrame }, workspace)
+	local a1 = New("Attachment", {}, anchor)
+	local a0 = New("Attachment", {}, part)
+	local ap = New("AlignPosition", { Attachment0 = a0, Attachment1 = a1, MaxForce = math.huge, MaxVelocity = math.huge, Responsiveness = m.Values.Stiffness, RigidityEnabled = false }, part)
+	local ao = New("AlignOrientation", { Attachment0 = a0, Attachment1 = a1, MaxTorque = math.huge, MaxAngularVelocity = math.huge, Responsiveness = m.Values.Stiffness }, part)
+	local hl = m.Values.Highlight and New("Highlight", { Adornee = part, FillTransparency = 0.75, OutlineTransparency = 0, FillColor = Accent(), OutlineColor = Accent() }, part) or nil
+	m._grab = { part = part, dist = math.clamp(dist, 4, m.Values.Reach * 2), anchor = anchor, a0 = a0, ap = ap, ao = ao, hl = hl, rot = part.CFrame.Rotation }
+	game:GetService("ContextActionService"):BindActionAtPriority("ZenithTKWheel", function(_, state, input)
+		if m._grab and state == Enum.UserInputState.Change then
+			m._grab.dist = math.clamp(m._grab.dist + input.Position.Z * 4, 4, m.Values.Reach * 2)
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.ContextActionPriority.High.Value + 30, Enum.UserInputType.MouseWheel)
+	return true
+end
+function ui.TK.Throw(m)
+	if not m._grab and not ui.TK.Grab(m) then return end
+	local g = m._grab
+	local part = g.part
+	ui.TK.Release(m)
+	part.AssemblyLinearVelocity = Camera.CFrame.LookVector * m.Values["Throw Power"]
+	part.AssemblyAngularVelocity = Vector3.new(math.random(-8, 8), math.random(-8, 8), math.random(-8, 8))
+end
+function ui.TK.MakeTool(m)
+	local bp = LP:FindFirstChildOfClass("Backpack") or LP:WaitForChild("Backpack", 5)
+	if not bp then return end
+	if m._tool then pcall(function() m._tool:Destroy() end) end
+	local tool = New("Tool", { Name = "Telekinesis", RequiresHandle = false, CanBeDropped = false, ToolTip = "Hold click on a loose part to move it" }, bp)
+	m._tool = tool
+	tool.Equipped:Connect(function() m._eq = true end)
+	tool.Unequipped:Connect(function() m._eq = false; ui.TK.Release(m) end)
+	tool.Activated:Connect(function() ui.TK.Grab(m) end)
+	tool.Deactivated:Connect(function() ui.TK.Release(m) end)
+end
+Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekinesis tool. Equip it, hold click on any loose part to lift it, and move it with your cursor. Scroll, or use the push and pull keys, to change its distance. The throw key launches it and lets go.",
+	Settings = {
+		Toggle("Use Keys", true, "Turns the push, pull and throw keys on or off. Turn it off if they clash with your keybinds. The phone buttons still work."),
+		Mode("Push Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "E", "Hold to push the held object farther away."),
+		Mode("Pull Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "Q", "Hold to pull the held object closer."),
+		Mode("Throw Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "F", "Launches the held object where you are looking and lets go of it."),
+		Slider("Reach", 30, 1000, 10, 200, "How far away you can grab something."),
+		Slider("Move Speed", 5, 200, 1, 50, "How fast the push and pull keys move the object."),
+		Slider("Throw Power", 50, 2000, 10, 300, "How fast the object is launched when you throw it."),
+		Slider("Stiffness", 10, 400, 5, 120, "How tightly the object follows your cursor. Lower is floatier."),
+		Toggle("Grab Players", false, "Lets you pick up other players too."),
+		Toggle("Highlight", true, "Outlines the object you are holding."),
+	},
+	OnEnable = function(m)
+		m._eq = false
+		ui.TK.MakeTool(m)
+		Hook(m, LP.CharacterAdded, function() task.wait(0.5); ui.TK.Release(m); ui.TK.MakeTool(m) end)
+		Hook(m, UIS.InputBegan, function(i, gp)
+			if gp or Typing() or not m._eq or not m.Values["Use Keys"] or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+			if i.KeyCode == ui.TK.Key(m.Values["Throw Key"]) then ui.TK.Throw(m) end
+		end)
+		if UIS.TouchEnabled then
+			m._tP, m._tN, m._tT = ui.TouchBtn("PUSH", 4), ui.TouchBtn("PULL", 3), ui.TouchBtn("THROW", 2)
+		end
+		m._claim = 0
+	end,
+	OnDisable = function(m)
+		ui.TK.Release(m)
+		ui.DropTouch(m._tP); ui.DropTouch(m._tN); ui.DropTouch(m._tT); m._tP, m._tN, m._tT = nil, nil, nil
+		if m._tool then pcall(function() m._tool:Destroy() end); m._tool = nil end
+	end,
+	OnRender = function(m, dt)
+		if m._tT then
+			if m._tT.held and not m._tTh then ui.TK.Throw(m) end
+			m._tTh = m._tT.held
+		end
+		local g = m._grab
+		if not g then return end
+		if not g.part.Parent or not m._eq then ui.TK.Release(m) return end
+		local V = m.Values
+		local keys = V["Use Keys"]
+		local push = (keys and Down(ui.TK.Key(V["Push Key"]) or Enum.KeyCode.E)) or (m._tP and m._tP.held)
+		local pull = (keys and Down(ui.TK.Key(V["Pull Key"]) or Enum.KeyCode.Q)) or (m._tN and m._tN.held)
+		if push then g.dist = math.min(g.dist + V["Move Speed"] * dt, V.Reach * 2) end
+		if pull then g.dist = math.max(g.dist - V["Move Speed"] * dt, 4) end
+		local mp = ui.TK.Pos()
+		local ray = Camera:ViewportPointToRay(mp.X, mp.Y)
+		g.anchor.CFrame = CFrame.new(ray.Origin + ray.Direction * g.dist) * g.rot
+		if os.clock() - (m._claim or 0) > 0.5 then m._claim = os.clock(); ui.TK.Claim() end
+		if g.hl then g.hl.FillColor, g.hl.OutlineColor = Accent(), Accent() end
+	end }
 
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
 	Settings = { Mode("Server", { "Random", "Smallest", "Largest" }, "Random", "Which server to join: any other server, the emptiest one, or the fullest one that still has room.") },
