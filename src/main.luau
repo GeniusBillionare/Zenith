@@ -3123,6 +3123,39 @@ Module{ Name = "InvisibleFling", Category = "Player", Desc = "Flings players usi
 		if best then ui.IFAt(best, V.Power) else ui.IFHome() end
 	end }
 
+-- PartBlast: every loose part around you is flung away from you, automatically
+Module{ Name = "PartBlast", Category = "Utility", Desc = "While on, every unanchored part around you is flung away from you with huge force. Like Telekinesis throwing, but on everything nearby at once.",
+	Settings = {
+		Slider("Range", 10, 500, 5, 80, "How far around you parts are affected, in studs."),
+		Slider("Power", 100, 100000, 100, 5000, "How fast parts are launched, in studs per second."),
+		Slider("Upward", 0, 1, 0.05, 0.3, "How much of the launch goes upward instead of straight away from you."),
+		Toggle("Include Players", false, "Also launches other players' characters."),
+	},
+	OnEnable = function(m) m._claim = 0 end,
+	OnTick = function(m)
+		local r = Root(); if not r then return end
+		local V = m.Values
+		if os.clock() - m._claim > 0.5 then m._claim = os.clock(); ui.TK.Claim() end
+		local op = OverlapParams.new()
+		op.FilterType = Enum.RaycastFilterType.Exclude
+		local skip = { LP.Character }
+		if not V["Include Players"] then
+			for _, p in ipairs(Players:GetPlayers()) do if p.Character then skip[#skip + 1] = p.Character end end
+		end
+		op.FilterDescendantsInstances = skip
+		local seen = {}
+		for _, part in ipairs(workspace:GetPartBoundsInRadius(r.Position, V.Range, op)) do
+			local root = part.AssemblyRootPart or part
+			if not root.Anchored and not seen[root] then
+				seen[root] = true
+				local d = root.Position - r.Position
+				d = d.Magnitude > 0.1 and d.Unit or Vector3.yAxis
+				local dir = (d + Vector3.new(0, V.Upward, 0)).Unit
+				root.AssemblyLinearVelocity = dir * V.Power
+			end
+		end
+	end }
+
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
 	Settings = { Mode("Server", { "Random", "Smallest", "Largest" }, "Random", "Which server to join: any other server, the emptiest one, or the fullest one that still has room.") },
 	Action = function(m)
