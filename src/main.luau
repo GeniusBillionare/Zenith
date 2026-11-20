@@ -242,7 +242,7 @@ function ui.DrawLogo(parent, height, opts)
 end
 
 -- brief fade-in logo when the client loads
-function ui.Splash()
+function ui.Splash(onDone)
 	local cg = New("CanvasGroup", { Name = "Splash", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromOffset(460, 330), BackgroundTransparency = 1, GroupTransparency = 1, ZIndex = 50 }, ui.Gui)
 	local logo = ui.DrawLogo(cg, 250, { text = true })
 	logo.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -277,6 +277,7 @@ function ui.Splash()
 				tw:Play()
 			end)
 		end
+		task.delay(#targets * 0.1 + 1, function() if onDone then onDone() end end)
 	end)
 end
 
@@ -693,6 +694,49 @@ function ui.InWater(r)
 	ui._wV = ok and res or false
 	return ui._wV
 end
+-- plays the swim (or swim idle) animation that matches what you are doing and turns you to face where you swim
+function ui.SwimPose(m, h, r, tgt)
+	local st = m._sw
+	if not st then st = {}; m._sw = st end
+	local an = h:FindFirstChildOfClass("Animator")
+	local moving = tgt.Magnitude > 1
+	local c = LP.Character
+	if an and st.char ~= c then
+		st.char = c
+		local sc = c and c:FindFirstChild("Animate")
+		local function load(folder, fallback)
+			local f = sc and sc:FindFirstChild(folder)
+			local a = f and f:FindFirstChildWhichIsA("Animation")
+			local anim = Instance.new("Animation")
+			anim.AnimationId = a and a.AnimationId or fallback
+			local ok, t = pcall(function() return an:LoadAnimation(anim) end)
+			if ok and t then t.Priority = Enum.AnimationPriority.Action; t.Looped = true; return t end
+		end
+		st.move, st.idle = load("swim", "rbxassetid://913384386"), load("swimidle", "rbxassetid://913389285")
+	end
+	local want, other = st.idle, st.move
+	if moving then want, other = st.move, st.idle end
+	if other and other.IsPlaying then other:Stop(0.2) end
+	if want and not want.IsPlaying then want:Play(0.2) end
+	h.AutoRotate = false
+	if moving then
+		local yaw
+		if Vector3.new(tgt.X, 0, tgt.Z).Magnitude > 0.5 then yaw = math.atan2(-tgt.X, -tgt.Z)
+		else local lv = r.CFrame.LookVector; yaw = math.atan2(-lv.X, -lv.Z) end
+		local pitch = math.asin(math.clamp(tgt.Unit.Y, -1, 1)) * 0.6
+		r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+		r.AssemblyAngularVelocity = Vector3.zero
+	end
+end
+function ui.SwimPoseOff(m)
+	local st = m._sw
+	if not st then return end
+	m._sw = nil
+	if st.move then pcall(function() st.move:Stop(0.1) end) end
+	if st.idle then pcall(function() st.idle:Stop(0.1) end) end
+	local h = Hum()
+	if h then h.AutoRotate = ui.Def.AutoRotate ~= false end
+end
 Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the air as if it were water. Space swims up, Left Ctrl swims down.",
 	Settings = { Slider("Speed", 8, 100, 1, 28, "How fast you swim in any direction.") },
 	OnEnable = function(m)
@@ -700,6 +744,7 @@ Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the 
 		if UIS.TouchEnabled then m._tUp, m._tDn = ui.TouchBtn("UP", 1), ui.TouchBtn("DOWN", 0) end
 	end,
 	OnDisable = function(m)
+		ui.SwimPoseOff(m)
 		ui.DropTouch(m._tUp); ui.DropTouch(m._tDn); m._tUp, m._tDn = nil, nil
 		workspace.Gravity = ui.Def.Gravity or 196.2
 		local h = Hum()
@@ -718,6 +763,7 @@ Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the 
 		elseif ui.Lower(m) then tgt -= Vector3.new(0, speed, 0) end
 		if tgt.Magnitude > speed then tgt = tgt.Unit * speed end
 		r.AssemblyLinearVelocity = v:Lerp(tgt, 0.35)
+		ui.SwimPose(m, h, r, tgt)
 	end }
 
 Module{ Name = "SwimAssist", Category = "Movement", Desc = "Fixes swimming in the air when another script or game puts you in the swim state. Instead of flinging you in one direction, you swim where you point and stop when you let go.",
@@ -730,8 +776,10 @@ Module{ Name = "SwimAssist", Category = "Movement", Desc = "Fixes swimming in th
 	OnTick = function(m)
 		local r, h = Root(), Hum(); if not r or not h then return end
 		local V = m.Values
-		if h:GetState() ~= Enum.HumanoidStateType.Swimming then return end
-		if V["Only In Air"] and ui.InWater(r) then return end
+		if h:GetState() ~= Enum.HumanoidStateType.Swimming or (V["Only In Air"] and ui.InWater(r)) then
+			if m._sw then ui.SwimPoseOff(m) end
+			return
+		end
 		local tgt = ui.SwimDir(h) * V.Speed
 		if V["Vertical Keys"] then
 			if Down(Enum.KeyCode.Space) or h.Jump then tgt += Vector3.new(0, V.Speed, 0)
@@ -739,7 +787,9 @@ Module{ Name = "SwimAssist", Category = "Movement", Desc = "Fixes swimming in th
 		end
 		if tgt.Magnitude > V.Speed then tgt = tgt.Unit * V.Speed end
 		r.AssemblyLinearVelocity = r.AssemblyLinearVelocity:Lerp(tgt, V.Smoothing)
-	end }
+		ui.SwimPose(m, h, r, tgt)
+	end,
+	OnDisable = function(m) ui.SwimPoseOff(m) end }
 
 Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
 	Settings = {
@@ -946,10 +996,23 @@ Module{ Name = "AntiVoid", Category = "Player", Desc = "If you fall below the vo
 	end }
 
 Module{ Name = "Blink", Category = "Player", Desc = "Pauses what the server sees of you. You move freely on your screen, but the game still sees you standing where you started. Turn it off and everything you did catches up at once.",
-	Settings = { Toggle("Ghost Clone", true, "Leaves a see-through copy of your body where the server thinks you are. It disappears when Blink turns off.") },
+	Settings = {
+		Mode("Method", { "Auto", "Bandwidth", "Sender Rate" }, "Auto", "Bandwidth cuts your outgoing data to almost nothing. Sender Rate slows how often your position is sent. Auto uses both, which works in more games.", true),
+		Toggle("Ghost Clone", true, "Leaves a see-through copy of your body where the server thinks you are. It disappears when Blink turns off."),
+	},
+	OnTick = function(m)
+		if m.Values.Method ~= "Sender Rate" then pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end) end
+	end,
 	OnEnable = function(m)
-		local ok = pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end)
-		if not ok then
+		local used = false
+		if m.Values.Method ~= "Sender Rate" then
+			used = pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end) or used
+		end
+		if m.Values.Method ~= "Bandwidth" and type(setfflag) == "function" then
+			used = pcall(function() setfflag("S2PhysicsSenderRate", "1") end) or used
+			m._ff = used
+		end
+		if not used then
 			ui.Notify("Your executor can't pause outgoing network data, so Blink can't work", false)
 			task.defer(function() SetEnabled(m, false, true) end)
 			return
@@ -977,6 +1040,7 @@ Module{ Name = "Blink", Category = "Player", Desc = "Pauses what the server sees
 	end,
 	OnDisable = function(m)
 		pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
+		if m._ff and type(setfflag) == "function" then pcall(function() setfflag("S2PhysicsSenderRate", "15") end); m._ff = nil end
 		if m._mark then m._mark:Destroy(); m._mark = nil end
 	end }
 
@@ -2390,6 +2454,11 @@ function ui.PL.Actions(u)
 			if not th then ui.Notify("They have no character right now", false) return end
 			PL.spectating = p; b.Text = "Stop Spectating"
 			Camera.CameraSubject = th
+			table.insert(PL.conns, Conn(RunService.RenderStepped, function()
+				if PL.spectating ~= p then return end
+				local nh = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+				if nh and Camera.CameraSubject ~= nh then Camera.CameraSubject = nh end
+			end))
 		end)
 		add("Fling", function()
 			if PL.flinging then return end
@@ -2567,6 +2636,116 @@ end
 Module{ Name = "PlayerLookup", Category = "Utility", Desc = "Opens a window listing the players in your server. Search any Roblox player by username or display name to see their profile. For players in your server you can teleport to, follow, spectate and fling them.",
 	OnEnable = function(m) ui.PL.mod = m; ui.PL.Build() end,
 	OnDisable = function(m) ui.PL.Destroy() end }
+
+-- Game Teleporter: browse the discovery page or search for games, and click one to go straight there
+ui.GT = {}
+function ui.GT.Destroy()
+	if ui.GT.win then ui.GT.win:Destroy(); ui.GT.win = nil end
+	ui.GT.stamp = nil
+end
+function ui.GT.Join(g)
+	ui.Notify("Teleporting to " .. tostring(g.name), true)
+	local ok = pcall(function() TeleportService:Teleport(g.placeId, LP) end)
+	if not ok then
+		if setclipboard then pcall(setclipboard, "roblox://experiences/start?placeId=" .. tostring(g.placeId)) end
+		ui.Notify("Could not teleport from here. The game link was copied if your executor allows it", false)
+	end
+end
+function ui.GT.Show(list, stamp)
+	local GT = ui.GT
+	if GT.stamp ~= stamp or not GT.grid or not GT.grid.Parent then return end
+	for _, c in ipairs(GT.grid:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+	if not list or #list == 0 then GT.status.Text = "No games found"; return end
+	GT.status.Text = ""
+	for i, g in ipairs(list) do
+		if g.placeId then
+			local card = New("TextButton", { Size = UDim2.fromOffset(140, 176), BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = "", LayoutOrder = i }, GT.grid)
+			New("UICorner", { CornerRadius = UDim.new(0, 8) }, card)
+			local img = New("ImageLabel", { Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(128, 110), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, Image = "rbxthumb://type=GameIcon&id=" .. tostring(g.universeId or 0) .. "&w=150&h=150", ScaleType = Enum.ScaleType.Crop }, card)
+			New("UICorner", { CornerRadius = UDim.new(0, 6) }, img)
+			New("TextLabel", { Position = UDim2.fromOffset(8, 120), Size = UDim2.new(1, -16, 0, 32), BackgroundTransparency = 1, Text = tostring(g.name), Font = FONT_B, TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true, TextTruncate = Enum.TextTruncate.AtEnd }, card)
+			local up, dn = g.totalUpVotes or 0, g.totalDownVotes or 0
+			local rate = (up + dn) > 0 and (math.floor(up / (up + dn) * 100) .. "%") or "-"
+			New("TextLabel", { Position = UDim2.fromOffset(8, 154), Size = UDim2.new(1, -16, 0, 16), BackgroundTransparency = 1, Text = tostring(g.playerCount or 0) .. " playing  -  " .. rate, Font = FONT, TextSize = 11, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left }, card)
+			card.MouseEnter:Connect(function() card.BackgroundColor3 = C_ROWHOV end)
+			card.MouseLeave:Connect(function() card.BackgroundColor3 = C_ROW end)
+			card.MouseButton1Click:Connect(function() ui.GT.Join(g) end)
+		end
+	end
+end
+function ui.GT.Fetch(query)
+	local GT = ui.GT
+	local stamp = os.clock(); GT.stamp = stamp
+	GT.status.Text = "Loading..."
+	task.spawn(function()
+		local res = ui.PL.Http("https://games.roblox.com/v1/games/list?model.maxRows=36&" .. query)
+		if GT.stamp ~= stamp then return end
+		if not res or not res.games then
+			if GT.status.Parent then GT.status.Text = "Could not load games. Your executor may be blocking web requests." end
+			return
+		end
+		ui.GT.Show(res.games, stamp)
+	end)
+end
+function ui.GT.Build()
+	local GT = ui.GT
+	if GT.win then return end
+	local vp = Camera.ViewportSize
+	if vp.X < 400 then vp = Vector2.new(1280, 720) end
+	local W, H = math.min(660, vp.X - 20), math.min(450, vp.Y - 30)
+	local win = New("Frame", { Name = "ZenithGames", Size = UDim2.fromOffset(W, H), Position = UDim2.fromOffset((vp.X - W) / 2, (vp.Y - H) / 2), BackgroundColor3 = Color3.fromRGB(18, 18, 25), BorderSizePixel = 0, ZIndex = 60, ClipsDescendants = true }, ui.Gui)
+	GT.win = win
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, win)
+	local stroke = New("UIStroke", { Thickness = 1.5, Transparency = 0.35 }, win)
+	AddPainter(stroke, function() stroke.Color = Accent(0.2) end)
+	local bar = New("TextButton", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0, AutoButtonColor = false, Text = "" }, win)
+	New("UICorner", { CornerRadius = UDim.new(0, 10) }, bar)
+	New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 12), BackgroundColor3 = Color3.fromRGB(13, 13, 19), BorderSizePixel = 0 }, bar)
+	New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(0.6, 0, 1, 0), BackgroundTransparency = 1, Text = "Game Teleporter", Font = FONT_B, TextSize = 16, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left }, bar)
+	local x = New("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(24, 24), BackgroundTransparency = 1, Text = "X", Font = FONT_B, TextSize = 14, TextColor3 = C_LIGHT }, bar)
+	x.MouseButton1Click:Connect(function() if GT.mod then SetEnabled(GT.mod, false) else ui.GT.Destroy() end end)
+	bar.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then ui.BeginDrag(win, i) end
+	end)
+	local line = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2), BorderSizePixel = 0 }, bar)
+	ui.StyleLine(line, 0, bar)
+	local box = New("TextBox", { Position = UDim2.fromOffset(12, 48), Size = UDim2.new(1, -24, 0, 30), BackgroundColor3 = C_HEAD, BorderSizePixel = 0, ClearTextOnFocus = false, Font = FONT, TextSize = 13, TextColor3 = WHITE, PlaceholderText = "Search games and press enter", PlaceholderColor3 = C_DIM, Text = "", TextXAlignment = Enum.TextXAlignment.Left }, win)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, box)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, box)
+	box.FocusLost:Connect(function(enter)
+		if enter and box.Text:gsub("%s", "") ~= "" then
+			ui.GT.Fetch("model.keyword=" .. game:GetService("HttpService"):UrlEncode(box.Text))
+		end
+	end)
+	local sorts = New("ScrollingFrame", { Position = UDim2.fromOffset(12, 84), Size = UDim2.new(1, -24, 0, 28), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X }, win)
+	New("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }, sorts)
+	GT.status = New("TextLabel", { Position = UDim2.fromOffset(12, 118), Size = UDim2.new(1, -24, 0, 16), BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 12, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left }, win)
+	GT.grid = New("ScrollingFrame", { Position = UDim2.fromOffset(12, 120), Size = UDim2.new(1, -24, 1, -130), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, win)
+	New("UIGridLayout", { CellSize = UDim2.fromOffset(140, 176), CellPadding = UDim2.fromOffset(8, 8), SortOrder = Enum.SortOrder.LayoutOrder }, GT.grid)
+	GT.status.ZIndex = 2
+	GT.status.Text = "Loading..."
+	task.spawn(function()
+		local res = ui.PL.Http("https://games.roblox.com/v1/games/sorts?gameSortsContext=GamesDefaultSorts")
+		if not GT.win or not sorts.Parent then return end
+		if not res or not res.sorts or #res.sorts == 0 then
+			GT.status.Text = "Could not load the discovery page. You can still search."
+			return
+		end
+		local first
+		for i, s in ipairs(res.sorts) do
+			local nm = s.displayName or s.name
+			local b = New("TextButton", { Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = nm, Font = FONT_B, TextSize = 12, TextColor3 = WHITE, LayoutOrder = i }, sorts)
+			New("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+			New("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, b)
+			b.MouseButton1Click:Connect(function() box.Text = ""; ui.GT.Fetch("model.sortToken=" .. tostring(s.token)) end)
+			first = first or s
+		end
+		if first then ui.GT.Fetch("model.sortToken=" .. tostring(first.token)) end
+	end)
+end
+Module{ Name = "GameTeleporter", Category = "Utility", Desc = "Opens a window with the discovery page and a game search. Click any game to teleport straight into it without leaving.",
+	OnEnable = function(m) ui.GT.mod = m; ui.GT.Build() end,
+	OnDisable = function(m) ui.GT.Destroy() end }
 
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
 	Settings = { Mode("Server", { "Random", "Smallest", "Largest" }, "Random", "Which server to join: any other server, the emptiest one, or the fullest one that still has room.") },
@@ -2866,10 +3045,10 @@ do
 	end
 
 	-- which modules were on
-	function ui.ApplyConfigEnabled(cfg)
+	function ui.ApplyConfigEnabled(cfg, filter)
 		for _, m in ipairs(Modules) do
 			local e = cfg.modules[m.Name]
-			if type(e) == "table" and type(e.enabled) == "boolean" and not m.Action and not m.Passive then
+			if type(e) == "table" and type(e.enabled) == "boolean" and not m.Action and not m.Passive and (not filter or filter(m)) then
 				SetEnabled(m, e.enabled, true)
 			end
 		end
@@ -3007,11 +3186,28 @@ Conn(Players.PlayerRemoving, function(p)
 end)
 
 local BOX = Vector3.new(2.2, 2.9, 2.2)
-local function Project(root)
+-- the box follows the real head and feet, so VR avatars (whose root part can sit far from the body) are boxed correctly
+function ui.CharBounds(ch, root)
+	local head = ch and ch:FindFirstChild("Head")
+	if not head or not head:IsA("BasePart") then return root.Position, BOX.Y end
+	local top = head.Position.Y + 1
+	local bot
+	for _, n in ipairs({ "LeftFoot", "RightFoot", "Left Leg", "Right Leg" }) do
+		local f = ch:FindFirstChild(n)
+		if f and f:IsA("BasePart") then
+			local y = f.Position.Y - (n:find("Foot") and 0.6 or 1)
+			bot = bot and math.min(bot, y) or y
+		end
+	end
+	bot = bot or (math.min(root.Position.Y, head.Position.Y) - BOX.Y)
+	if top - bot < 2 then return root.Position, BOX.Y end
+	return Vector3.new(head.Position.X, (top + bot) / 2, head.Position.Z), (top - bot) / 2
+end
+local function Project(root, ch)
 	local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
-	local c = root.Position
+	local c, hy = ui.CharBounds(ch, root)
 	for sx = -1, 1, 2 do for sy = -1, 1, 2 do for sz = -1, 1, 2 do
-				local v = Camera:WorldToViewportPoint(c + Vector3.new(sx * BOX.X, sy * BOX.Y, sz * BOX.Z))
+				local v = Camera:WorldToViewportPoint(c + Vector3.new(sx * BOX.X, sy * hy, sz * BOX.Z))
 				if v.Z <= 0 then return nil end
 				minX, maxX = math.min(minX, v.X), math.max(maxX, v.X)
 				minY, maxY = math.min(minY, v.Y), math.max(maxY, v.Y)
@@ -3045,7 +3241,7 @@ local function UpdateESP()
 				local okN = Names.Enabled and Pass(Names, p, root)
 				local okT = Tracers.Enabled and Pass(Tracers, p, root)
 				local x1, y1, x2, y2
-				if okE or okN then x1, y1, x2, y2 = Project(root) end
+				if okE or okN then x1, y1, x2, y2 = Project(root, ch) end
 				if okE and x1 then
 					d.Box.Visible = true
 					d.Box.Position = UDim2.fromOffset(x1, y1)
@@ -3071,7 +3267,7 @@ local function UpdateESP()
 					d.Label.Position = UDim2.fromOffset((x1 + x2) / 2, y1 - 2)
 				else d.Label.Visible = false end
 				if okT then
-					local v = Camera:WorldToViewportPoint(root.Position)
+					local v = Camera:WorldToViewportPoint((ui.CharBounds(ch, root)))
 					if v.Z > 0 then
 						local o = Tracers.Values.Origin
 						local origin = o == "Bottom" and Vector2.new(vp.X / 2, vp.Y) or o == "Center" and vp / 2 or UIS:GetMouseLocation()
@@ -4457,9 +4653,18 @@ SetEnabled(ArrayList, true, true)
 SetEnabled(Notifs, true, true)
 SetEnabled(HUDm, true, true)
 -- a saved config overrides the defaults above; with no file (or no file functions) the defaults stay
+ui.Display = { ArrayList = true, Notifications = true, HUD = true, TabGUI = true }
 if ui.Config then
-	ui.ApplyConfigEnabled(ui.Config)
+	-- with the startup logo on, only the on-screen displays load now; everything else loads once they have shot out
+	ui.ApplyConfigEnabled(ui.Config, GuiSettings.Values["Startup Logo"] and function(m) return ui.Display[m.Name] end or nil)
 	ui.ApplyLayout(ui.Config)
+end
+function ui.Stage2()
+	if ui._stage2 then return end
+	ui._stage2 = true
+	if ui.Config and GuiSettings.Values["Startup Logo"] then
+		ui.ApplyConfigEnabled(ui.Config, function(m) return not ui.Display[m.Name] end)
+	end
 end
 Conn(LP.OnTeleport, function(state)
 	if GuiSettings.Values["Keep Across Teleports"] and (state == Enum.TeleportState.Started or state == Enum.TeleportState.InProgress) then
@@ -4470,5 +4675,10 @@ if GuiSettings.Values["Keep Across Teleports"] then ui.SetKeep(true) end
 ui.GuiMod = GuiSettings
 Safe(ui.SetUIType, GuiSettings.Values["UI Type"])
 Safe(ui.ApplyScale)
-if GuiSettings.Values["Startup Logo"] then Safe(ui.Splash) end
+if GuiSettings.Values["Startup Logo"] then
+	Safe(ui.Splash, function() Safe(ui.Stage2) end)
+	task.delay(8, function() Safe(ui.Stage2) end)
+else
+	ui._stage2 = true
+end
 ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
