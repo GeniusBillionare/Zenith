@@ -2594,6 +2594,19 @@ function ui.PL.Actions(u)
 				PL.flinging = false
 			end)
 		end)
+		add("Invisible Fling", function()
+			if PL.flinging or ui.IF.st then return end
+			local tr0 = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+			if not tr0 then ui.Notify("They have no character right now", false) return end
+			if not ui.IFStart() then ui.Notify("You need a living character", false) return end
+			PL.flinging = true
+			local t0 = os.clock()
+			local c = Conn(RunService.Heartbeat, function()
+				local t = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+				if t and os.clock() - t0 < 2.5 then ui.IFAt(t, 20000) end
+			end)
+			task.delay(2.6, function() c:Disconnect(); ui.IFStop(); PL.flinging = false end)
+		end)
 	end
 	add("Copy Username", function() ui.PL.Copy(u.name, "Username") end)
 	add("Copy User ID", function() ui.PL.Copy(tostring(u.id), "User ID") end)
@@ -2899,17 +2912,24 @@ end
 function ui.TK.Pick(m)
 	local mp = ui.TK.Pos()
 	local ray = Camera:ViewportPointToRay(mp.X, mp.Y)
-	local res = workspace:Raycast(ray.Origin, ray.Direction * m.Values.Reach, RayParams())
-	local part = res and res.Instance
-	if not part or not part:IsA("BasePart") then return nil end
-	local root = part.AssemblyRootPart or part
-	if root.Anchored then return nil end
-	if not m.Values["Grab Players"] then
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Character and part:IsDescendantOf(p.Character) then return nil end
+	local params = RayParams()
+	local ignore = { LP.Character }
+	-- anchored parts (and anything attached to one) are looked through, so the next loose part behind them is the one grabbed
+	for _ = 1, 30 do
+		params.FilterDescendantsInstances = ignore
+		local res = workspace:Raycast(ray.Origin, ray.Direction * m.Values.Reach, params)
+		if not res then return nil end
+		local part = res.Instance
+		local blocked = part.Anchored or (part.AssemblyRootPart ~= nil and part.AssemblyRootPart.Anchored)
+		if not blocked and not m.Values["Grab Players"] then
+			for _, pl in ipairs(Players:GetPlayers()) do
+				if pl.Character and part:IsDescendantOf(pl.Character) then blocked = true break end
+			end
 		end
+		if not blocked then return part, res.Distance end
+		table.insert(ignore, part)
 	end
-	return root, (root.Position - ray.Origin).Magnitude
+	return nil
 end
 function ui.TK.Release(m)
 	local g = m._grab
@@ -2957,7 +2977,7 @@ function ui.TK.MakeTool(m)
 	tool.Activated:Connect(function() ui.TK.Grab(m) end)
 	tool.Deactivated:Connect(function() ui.TK.Release(m) end)
 end
-Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekinesis tool. Equip it, hold click on any loose part to lift it, and move it with your cursor. Scroll, or use the push and pull keys, to change its distance. The throw key launches it and lets go.",
+Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekinesis tool. Equip it, hold click on a loose part to lift just that part and move it with your cursor. Anchored parts are looked through. Scroll, or use the push and pull keys, to change its distance. The throw key launches it and lets go.",
 	Settings = {
 		Toggle("Use Keys", true, "Turns the push, pull and throw keys on or off. Turn it off if they clash with your keybinds. The phone buttons still work."),
 		Mode("Push Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "E", "Hold to push the held object farther away."),
@@ -3007,6 +3027,100 @@ Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekine
 		g.anchor.CFrame = CFrame.new(ray.Origin + ray.Direction * g.dist) * g.rot
 		if os.clock() - (m._claim or 0) > 0.5 then m._claim = os.clock(); ui.TK.Claim() end
 		if g.hl then g.hl.FillColor, g.hl.OutlineColor = Accent(), Accent() end
+	end }
+
+-- Invisible Fling: the HumanoidRootPart is invisible by default and is the part that collides. It is split off from your
+-- body, your visible body parts are held still, and only the root part is sent into players.
+ui.IF = {}
+function ui.IFStart()
+	if ui.IF.st then return true end
+	local c, r, h = LP.Character, Root(), Hum()
+	if not (c and r and h) then return false end
+	local st = { home = r.CFrame, joints = {}, body = {}, cam = Camera.CameraSubject, ps = h.PlatformStand }
+	for _, j in ipairs(r:GetJoints()) do
+		if j:IsA("JointInstance") then
+			pcall(function() j.Enabled = false end)
+			st.joints[#st.joints + 1] = j
+		end
+	end
+	for _, d in ipairs(c:GetDescendants()) do
+		if d:IsA("BasePart") and d ~= r and not d.Anchored then
+			d.Anchored = true
+			st.body[#st.body + 1] = d
+		end
+	end
+	h.PlatformStand = true
+	local head = c:FindFirstChild("Head")
+	if head then Camera.CameraSubject = head end
+	ui.IF.st = st
+	return true
+end
+function ui.IFAt(tr, power)
+	local r = Root()
+	if not ui.IF.st or not r then return end
+	r.CFrame = tr.CFrame
+	local d = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)
+	r.AssemblyLinearVelocity = (d.Magnitude > 0.01 and d.Unit or Vector3.yAxis) * power
+	r.AssemblyAngularVelocity = Vector3.new(power, power, power)
+end
+function ui.IFHome()
+	local r, st = Root(), ui.IF.st
+	if not r or not st then return end
+	r.CFrame = st.home
+	r.AssemblyLinearVelocity = Vector3.zero
+	r.AssemblyAngularVelocity = Vector3.zero
+end
+function ui.IFStop()
+	local st = ui.IF.st
+	if not st then return end
+	ui.IF.st = nil
+	for _, j in ipairs(st.joints) do pcall(function() j.Enabled = true end) end
+	for _, p in ipairs(st.body) do pcall(function() p.Anchored = false end) end
+	local r, h = Root(), Hum()
+	if r then
+		r.CFrame = st.home
+		r.AssemblyLinearVelocity = Vector3.zero
+		r.AssemblyAngularVelocity = Vector3.zero
+	end
+	if h then
+		h.PlatformStand = st.ps
+		Camera.CameraSubject = h
+	end
+end
+Module{ Name = "InvisibleFling", Category = "Player", Desc = "Flings players using only your invisible HumanoidRootPart. Your visible body stays where it is while the root part is sent into the nearest player in range. Turn it off to put everything back together.",
+	Settings = {
+		Slider("Range", 10, 300, 5, 80, "How far from your body a player can be and still get targeted."),
+		Slider("Power", 1000, 100000, 1000, 10000, "How hard players are launched."),
+		Toggle("Team Check", true, D_TEAM),
+	},
+	OnEnable = function(m)
+		if not ui.IFStart() then
+			ui.Notify("Invisible Fling needs a living character", false)
+			task.defer(function() SetEnabled(m, false, true) end)
+			return
+		end
+		Hook(m, LP.CharacterAdded, function()
+			ui.IF.st = nil
+			task.wait(0.7)
+			if m.Enabled then ui.IFStart() end
+		end)
+	end,
+	OnDisable = function(m) ui.IFStop() end,
+	OnTick = function(m)
+		local st, h = ui.IF.st, Hum()
+		if not st then return end
+		if not h or h.Health <= 0 then ui.IFStop() return end
+		local V = m.Values
+		local best, bd = nil, V.Range
+		for _, p in ipairs(Players:GetPlayers()) do
+			local tr = p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+			local th = tr and p.Character:FindFirstChildOfClass("Humanoid")
+			if tr and th and th.Health > 0 and not (V["Team Check"] and ui.SameTeam(p)) then
+				local d = (tr.Position - st.home.Position).Magnitude
+				if d < bd then best, bd = tr, d end
+			end
+		end
+		if best then ui.IFAt(best, V.Power) else ui.IFHome() end
 	end }
 
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
