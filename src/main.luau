@@ -793,114 +793,6 @@ Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the 
 		ui.SwimPose(m, h, r, tgt)
 	end }
 
--- Gravity Shift: aim at any surface and press the key. That surface becomes the floor, so you can walk on walls and ceilings.
-function ui.GSOff(m)
-	m._on = false
-	m._up, m._tup = Vector3.yAxis, Vector3.yAxis
-	workspace.Gravity = ui.Def.Gravity or 196.2
-	local r, h = Root(), Hum()
-	if h then h.PlatformStand = false end
-	if r then
-		local lv = r.CFrame.LookVector
-		local fwd = Vector3.new(lv.X, 0, lv.Z)
-		if fwd.Magnitude < 0.1 then fwd = Vector3.new(0, 0, -1) end
-		r.CFrame = CFrame.lookAt(r.Position + Vector3.new(0, 1, 0), r.Position + Vector3.new(0, 1, 0) + fwd)
-		r.AssemblyAngularVelocity = Vector3.zero
-		local v = r.AssemblyLinearVelocity
-		r.AssemblyLinearVelocity = Vector3.new(v.X * 0.3, math.min(v.Y, 10), v.Z * 0.3)
-	end
-end
-function ui.GSToggle(m)
-	if m._on then ui.GSOff(m) ui.Notify("Gravity Shift: back to normal", true) return end
-	local res = workspace:Raycast(Camera.CFrame.Position, Camera.CFrame.LookVector * 500, RayParams())
-	if not res then ui.Notify("Gravity Shift: aim at a surface first", false) return end
-	m._tup = res.Normal
-	m._on = true
-	ui.Notify("Gravity Shift: new floor set", true)
-end
-Module{ Name = "GravityShift", Category = "Movement", Desc = "Aim at a wall, floor or ceiling and press the key. That surface becomes your floor and you walk on it. Press the key again to go back to normal.",
-	Settings = {
-		Toggle("Use Key", true, "Turns the shift key on or off. Turn it off if it clashes with your keybinds. The phone button still works."),
-		Mode("Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "G", "The key that shifts gravity toward the surface you are aiming at, and back."),
-		Slider("Gravity", 20, 400, 5, 196, "How hard you are pulled toward your new floor."),
-		Slider("Walk Speed", 8, 60, 1, 24, "How fast you walk along the new floor."),
-		Slider("Jump Power", 10, 100, 1, 50, "How hard you jump away from the new floor."),
-		Toggle("Tilt Camera", true, "Rolls your camera so the new floor is always at the bottom of your screen."),
-	},
-	OnEnable = function(m)
-		m._up, m._tup, m._on = Vector3.yAxis, Vector3.yAxis, false
-		Hook(m, UIS.InputBegan, function(i, gp)
-			if gp or Typing() or not m.Values["Use Key"] or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
-			local ok, k = pcall(function() return Enum.KeyCode[m.Values.Key] end)
-			if ok and i.KeyCode == k then ui.GSToggle(m) end
-		end)
-		if UIS.TouchEnabled then m._tBtn = ui.TouchBtn("SHIFT", 2) end
-	end,
-	OnDisable = function(m)
-		ui.DropTouch(m._tBtn); m._tBtn = nil
-		if m._on then ui.GSOff(m) end
-	end,
-	OnTick = function(m)
-		if m._tBtn then
-			if m._tBtn.held and not m._tHeld then ui.GSToggle(m) end
-			m._tHeld = m._tBtn.held
-		end
-		if not m._on then return end
-		local r, h = Root(), Hum()
-		if not r or not h or h.Health <= 0 then ui.GSOff(m) return end
-		local V = m.Values
-		local now = os.clock()
-		local dt = math.min(now - (m._t or now), 0.1)
-		m._t = now
-		m._up = m._up:Lerp(m._tup, 0.2)
-		if m._up.Magnitude < 0.01 then m._up = m._tup end
-		local up = m._up.Unit
-		-- movement keys or the touch stick, laid onto the new floor
-		local mx = (Down(Enum.KeyCode.D) and 1 or 0) - (Down(Enum.KeyCode.A) and 1 or 0)
-		local my = (Down(Enum.KeyCode.W) and 1 or 0) - (Down(Enum.KeyCode.S) and 1 or 0)
-		if UIS.TouchEnabled then local mv = ui.MoveVec(); if mv.Magnitude > 0.1 then mx, my = mv.X, mv.Y end end
-		local cf = Camera.CFrame
-		local function flat(v) return v - up * v:Dot(up) end
-		local fwd, rgt = flat(cf.LookVector), flat(cf.RightVector)
-		if fwd.Magnitude < 0.2 then fwd = flat(cf.UpVector) end
-		fwd = fwd.Magnitude > 0 and fwd.Unit or Vector3.zero
-		rgt = rgt.Magnitude > 0 and rgt.Unit or Vector3.zero
-		local dir = fwd * my + rgt * mx
-		local moving = dir.Magnitude > 0.05
-		if moving then dir = dir.Unit end
-		local v = r.AssemblyLinearVelocity
-		local vUp = up * v:Dot(up)
-		local vPlane = v - vUp
-		vPlane = vPlane:Lerp(moving and dir * V["Walk Speed"] or Vector3.zero, 0.3)
-		local hit = workspace:Raycast(r.Position, -up * 3.6, RayParams())
-		workspace.Gravity = 0
-		h.PlatformStand = true
-		if hit and now > (m._airT or 0) then
-			vUp = Vector3.zero
-			r.CFrame = r.CFrame + up * math.clamp(3 - (hit.Position - r.Position):Dot(-up), -0.5, 0.5) * 0.5
-			if Down(Enum.KeyCode.Space) or h.Jump then vUp = up * V["Jump Power"]; m._airT = now + 0.25 end
-		else
-			vUp = vUp - up * V.Gravity * dt
-		end
-		r.AssemblyLinearVelocity = vPlane + vUp
-		local face = moving and dir or flat(r.CFrame.LookVector)
-		if face.Magnitude < 0.1 then face = fwd end
-		if face.Magnitude > 0.1 then
-			face = face.Unit
-			r.CFrame = CFrame.fromMatrix(r.Position, face:Cross(up).Unit, up, -face)
-		end
-		r.AssemblyAngularVelocity = Vector3.zero
-	end,
-	OnRender = function(m)
-		if not m._on or not m.Values["Tilt Camera"] then return end
-		local cf = Camera.CFrame
-		local look = cf.LookVector
-		local rgt = look:Cross(m._up)
-		if rgt.Magnitude < 0.05 then return end
-		rgt = rgt.Unit
-		Camera.CFrame = CFrame.fromMatrix(cf.Position, rgt, rgt:Cross(look), -look)
-	end }
-
 Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
 	Settings = {
 		Mode("Mode", { "Lift", "Steer" }, "Lift", "Lift pushes you straight up while it is on. Steer flies you in the direction your camera is facing."),
@@ -2901,9 +2793,17 @@ function ui.TK.Key(name)
 	local ok, k = pcall(function() return Enum.KeyCode[name] end)
 	return ok and k or nil
 end
+-- other players only see a part move if you own its physics, so the claim is made several ways and checked
 function ui.TK.Claim()
 	pcall(function() sethiddenproperty(LP, "SimulationRadius", 1e9) end)
 	pcall(function() sethiddenproperty(LP, "MaximumSimulationRadius", 1e9) end)
+	pcall(function() LP.MaximumSimulationRadius = 1e9 end)
+	if type(setsimulationradius) == "function" then pcall(setsimulationradius, 1e9, 1e9) end
+end
+function ui.TK.Owned(part)
+	if type(isnetworkowner) ~= "function" then return true end
+	local ok, r = pcall(isnetworkowner, part)
+	return not ok or r
 end
 function ui.TK.Pos()
 	if ui.Phone and ui.TouchPos then return ui.TouchPos end
@@ -2935,7 +2835,8 @@ function ui.TK.Release(m)
 	local g = m._grab
 	if not g then return end
 	m._grab = nil
-	for _, o in ipairs({ g.ap, g.ao, g.a0, g.hl, g.anchor }) do pcall(function() o:Destroy() end) end
+	for _, o in ipairs({ g.ap, g.ao, g.a0, g.anchor }) do pcall(function() o:Destroy() end) end
+	for _, o in ipairs(g.hls or {}) do pcall(function() o:Destroy() end) end
 	pcall(function() game:GetService("ContextActionService"):UnbindAction("ZenithTKWheel") end)
 end
 function ui.TK.Grab(m)
@@ -2948,8 +2849,18 @@ function ui.TK.Grab(m)
 	local a0 = New("Attachment", {}, part)
 	local ap = New("AlignPosition", { Attachment0 = a0, Attachment1 = a1, MaxForce = math.huge, MaxVelocity = math.huge, Responsiveness = m.Values.Stiffness, RigidityEnabled = false }, part)
 	local ao = New("AlignOrientation", { Attachment0 = a0, Attachment1 = a1, MaxTorque = math.huge, MaxAngularVelocity = math.huge, Responsiveness = m.Values.Stiffness }, part)
-	local hl = m.Values.Highlight and New("Highlight", { Adornee = part, FillTransparency = 0.75, OutlineTransparency = 0, FillColor = Accent(), OutlineColor = Accent() }, part) or nil
-	m._grab = { part = part, dist = math.clamp(dist, 4, m.Values.Reach * 2), anchor = anchor, a0 = a0, ap = ap, ao = ao, hl = hl, rot = part.CFrame.Rotation }
+	local hls = {}
+	if m.Values.Highlight then
+		-- the whole welded assembly moves with the part, so the whole assembly is outlined
+		local group = part:GetConnectedParts(true)
+		if #group == 0 then group = { part } end
+		for i = 1, math.min(#group, 30) do
+			hls[#hls + 1] = New("Highlight", { Adornee = group[i], FillTransparency = 0.75, OutlineTransparency = 0, FillColor = Accent(), OutlineColor = Accent() }, group[i])
+		end
+	end
+	part.AssemblyLinearVelocity = part.AssemblyLinearVelocity + Vector3.new(0, 0.05, 0)
+	if not ui.TK.Owned(part) then ui.Notify("You don't own this part's physics, so other players may not see it move", false) end
+	m._grab = { part = part, dist = math.clamp(dist, 4, m.Values.Reach * 2), anchor = anchor, a0 = a0, ap = ap, ao = ao, hls = hls, rot = part.CFrame.Rotation }
 	game:GetService("ContextActionService"):BindActionAtPriority("ZenithTKWheel", function(_, state, input)
 		if m._grab and state == Enum.UserInputState.Change then
 			m._grab.dist = math.clamp(m._grab.dist + input.Position.Z * 4, 4, m.Values.Reach * 2)
@@ -3026,7 +2937,7 @@ Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekine
 		local ray = Camera:ViewportPointToRay(mp.X, mp.Y)
 		g.anchor.CFrame = CFrame.new(ray.Origin + ray.Direction * g.dist) * g.rot
 		if os.clock() - (m._claim or 0) > 0.5 then m._claim = os.clock(); ui.TK.Claim() end
-		if g.hl then g.hl.FillColor, g.hl.OutlineColor = Accent(), Accent() end
+		for _, hl in ipairs(g.hls) do hl.FillColor, hl.OutlineColor = Accent(), Accent() end
 	end }
 
 -- Invisible Fling: the HumanoidRootPart is invisible by default and is the part that collides. It is split off from your
@@ -3148,12 +3059,49 @@ Module{ Name = "PartBlast", Category = "Utility", Desc = "While on, every unanch
 			local root = part.AssemblyRootPart or part
 			if not root.Anchored and not seen[root] then
 				seen[root] = true
+				if not ui.TK.Owned(root) then
+					if not m._warned then m._warned = true; ui.Notify("Some parts are not owned by you, so they were skipped. Others would not see them move", false) end
+					continue
+				end
 				local d = root.Position - r.Position
 				d = d.Magnitude > 0.1 and d.Unit or Vector3.yAxis
 				local dir = (d + Vector3.new(0, V.Upward, 0)).Unit
 				root.AssemblyLinearVelocity = dir * V.Power
 			end
 		end
+	end }
+
+-- Instant Respawn: asks the server to respawn you as soon as you die (needs an executor that can fire that signal),
+-- and can put you back where you died
+Module{ Name = "InstantRespawn", Category = "Player", Desc = "When you die, tries to make the server respawn you right away instead of waiting out the death timer. With Respawn Here on, you reappear where you died. The instant part depends on your executor.",
+	Settings = {
+		Toggle("Respawn Here", false, "Puts you back where you died as soon as your new character loads, instead of at a spawn."),
+		Toggle("Use Executor Signal", true, "Fires the death signal to the server as soon as you die, which asks it to respawn you now. Needs an executor with replicatesignal."),
+	},
+	OnEnable = function(m)
+		local function bind(c)
+			local h = c:WaitForChild("Humanoid", 5)
+			if not h then return end
+			h.Died:Connect(function()
+				local r = c:FindFirstChild("HumanoidRootPart")
+				if r then m._death = r.CFrame end
+				if m.Enabled and m.Values["Use Executor Signal"] and type(replicatesignal) == "function" then
+					pcall(function() replicatesignal(LP.ConnectDiedSignalBackend) end)
+				end
+			end)
+		end
+		if LP.Character then task.spawn(bind, LP.Character) end
+		Hook(m, LP.CharacterAdded, function(c)
+			task.spawn(bind, c)
+			local cf = m._death
+			m._death = nil
+			if cf and m.Values["Respawn Here"] then
+				local r = c:WaitForChild("HumanoidRootPart", 5)
+				if r then
+					for _ = 1, 4 do task.wait(0.1); r.CFrame = cf end
+				end
+			end
+		end)
 	end }
 
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
