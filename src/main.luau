@@ -204,22 +204,44 @@ function ui.DrawLogo(parent, height, opts)
 		local n = #poly / 2
 		local ymin, ymax = math.huge, -math.huge
 		for i = 2, #poly, 2 do ymin = math.min(ymin, poly[i]); ymax = math.max(ymax, poly[i]) end
+		local SUB = 4
 		for r = math.floor((ymin - OY) * s), math.ceil((ymax - OY) * s) - 1 do
-			local sy = OY + (r + 0.5) / s
-			local xs = {}
-			for i = 1, n do
-				local j = i % n + 1
-				local ax, ay, bx, by = poly[2 * i - 1], poly[2 * i], poly[2 * j - 1], poly[2 * j]
-				if (ay <= sy and sy < by) or (by <= sy and sy < ay) then
-					table.insert(xs, ax + (sy - ay) / (by - ay) * (bx - ax))
+			local cov, lo, hi = {}, math.huge, -math.huge
+			for k = 0, SUB - 1 do
+				local sy = OY + (r + (k + 0.5) / SUB) / s
+				local xs = {}
+				for i = 1, n do
+					local j = i % n + 1
+					local ax, ay, bx, by = poly[2 * i - 1], poly[2 * i], poly[2 * j - 1], poly[2 * j]
+					if (ay <= sy and sy < by) or (by <= sy and sy < ay) then
+						table.insert(xs, ax + (sy - ay) / (by - ay) * (bx - ax))
+					end
+				end
+				table.sort(xs)
+				for q = 1, #xs - 1, 2 do
+					local pa, pb = (xs[q] - OX) * s, (xs[q + 1] - OX) * s
+					local c0, c1 = math.floor(pa), math.floor(pb)
+					lo, hi = math.min(lo, c0), math.max(hi, c1)
+					if c0 == c1 then
+						cov[c0] = (cov[c0] or 0) + (pb - pa) / SUB
+					else
+						cov[c0] = (cov[c0] or 0) + (c0 + 1 - pa) / SUB
+						for c = c0 + 1, c1 - 1 do cov[c] = (cov[c] or 0) + 1 / SUB end
+						cov[c1] = (cov[c1] or 0) + (pb - c1) / SUB
+					end
 				end
 			end
-			table.sort(xs)
-			for k = 1, #xs - 1, 2 do
-				local x0 = math.floor((xs[k] - OX) * s + 0.5)
-				local x1 = math.floor((xs[k + 1] - OX) * s + 0.5)
-				if x1 <= x0 then x1 = x0 + 1 end
-				table.insert(parts, New("Frame", { Position = UDim2.fromOffset(x0, r), Size = UDim2.fromOffset(x1 - x0, 1), BackgroundColor3 = fixed or WHITE, BorderSizePixel = 0 }, root))
+			local c = lo
+			while c <= hi do
+				local v = cov[c] or 0
+				if v >= 0.98 then
+					local start = c
+					while c + 1 <= hi and (cov[c + 1] or 0) >= 0.98 do c += 1 end
+					table.insert(parts, New("Frame", { Position = UDim2.fromOffset(start, r), Size = UDim2.fromOffset(c - start + 1, 1), BackgroundColor3 = fixed or WHITE, BorderSizePixel = 0 }, root))
+				elseif v > 0.04 then
+					table.insert(parts, New("Frame", { Position = UDim2.fromOffset(c, r), Size = UDim2.fromOffset(1, 1), BackgroundColor3 = fixed or WHITE, BackgroundTransparency = 1 - math.min(v, 1), BorderSizePixel = 0 }, root))
+				end
+				c += 1
 			end
 		end
 		-- the whole logo follows the theme; one painter per shape keeps it cheap
@@ -2411,10 +2433,7 @@ function ui.PL.Btn(parent, text, fn, order)
 	return b
 end
 function ui.PL.Thumb(img, id, big)
-	task.spawn(function()
-		local ok, url = pcall(function() return Players:GetUserThumbnailAsync(id, big and Enum.ThumbnailType.AvatarBust or Enum.ThumbnailType.HeadShot, big and Enum.ThumbnailSize.Size150x150 or Enum.ThumbnailSize.Size100x100) end)
-		if ok and img.Parent then img.Image = url end
-	end)
+	img.Image = "rbxthumb://type=" .. (big and "AvatarBust" or "AvatarHeadShot") .. "&id=" .. tostring(id) .. "&w=150&h=150"
 end
 function ui.PL.Copy(text, what)
 	if setclipboard then pcall(setclipboard, text); ui.Notify(what .. " copied", true) else ui.Notify("Your executor can't copy to the clipboard", false) end
@@ -2705,7 +2724,14 @@ function ui.GT.Games(res)
 	end
 	return out
 end
-function ui.GT.Fetch(kind, arg)
+function ui.GT.Get(url)
+	local ok, body = pcall(function() return game:HttpGet(url) end)
+	if not ok then return nil, tostring(body) end
+	local ok2, res = pcall(function() return game:GetService("HttpService"):JSONDecode(body) end)
+	if not ok2 then return nil, "unreadable reply: " .. string.sub(tostring(body), 1, 60) end
+	return res
+end
+function ui.GT.Fetch(kind, arg, tries)
 	local GT = ui.GT
 	local stamp = os.clock(); GT.stamp = stamp
 	GT.status.Text = "Loading..."
@@ -2716,15 +2742,23 @@ function ui.GT.Fetch(kind, arg)
 		if kind == "search" then
 			url = "https://apis.roblox.com/search-api/omni-search?searchQuery=" .. HS:UrlEncode(arg) .. "&sessionId=" .. sid .. "&pageType=all"
 		else
-			url = "https://apis.roblox.com/explore-api/v1/get-sort-content?sessionId=" .. sid .. "&sortId=" .. HS:UrlEncode(tostring(arg))
+			url = "https://apis.roblox.com/explore-api/v1/get-sort-content?sessionId=" .. sid .. "&device=computer&country=all&sortId=" .. HS:UrlEncode(tostring(arg))
 		end
-		local res = ui.PL.Http(url)
+		local res, err = ui.GT.Get(url)
 		if GT.stamp ~= stamp then return end
-		if not res then
-			if GT.status.Parent then GT.status.Text = "Could not load games. Your executor may be blocking web requests, or Roblox changed this endpoint." end
+		local games = res and ui.GT.Games(res) or {}
+		-- a sort that comes back empty: try the next one so the home page is never blank
+		if #games == 0 and kind == "sort" and GT.sorts and (tries or 1) < #GT.sorts then
+			ui.GT.Fetch("sort", GT.sorts[(tries or 1) + 1], (tries or 1) + 1)
 			return
 		end
-		ui.GT.Show(ui.GT.Games(res), stamp)
+		if #games == 0 and kind == "sort" then
+			ui.GT.Fetch("search", "popular")
+			return
+		end
+		if not GT.status.Parent then return end
+		if #games == 0 then GT.status.Text = err and ("Could not load games: " .. string.sub(err, 1, 90)) or "No games found" return end
+		ui.GT.Show(games, stamp)
 	end)
 end
 function ui.GT.Build()
@@ -2765,22 +2799,31 @@ function ui.GT.Build()
 	GT.status.ZIndex = 2
 	GT.status.Text = "Loading..."
 	task.spawn(function()
-		local res = ui.PL.Http("https://apis.roblox.com/explore-api/v1/get-sorts?sessionId=" .. game:GetService("HttpService"):GenerateGUID(false))
+		local res, err = ui.GT.Get("https://apis.roblox.com/explore-api/v1/get-sorts?sessionId=" .. game:GetService("HttpService"):GenerateGUID(false) .. "&device=computer&country=all")
 		if not GT.win or not sorts.Parent then return end
 		local list = {}
-		if res then ui.GT.Walk(res, list, function(t) return t.sortId ~= nil and (t.sortDisplayName or t.displayName or t.name or t.sortName) ~= nil end, 0) end
-		if #list == 0 then
-			GT.status.Text = "Could not load the discovery page. You can still search."
-			return
-		end
-		for i, srt in ipairs(list) do
-			local nm = srt.sortDisplayName or srt.displayName or srt.name or srt.sortName
+		if res then ui.GT.Walk(res, list, function(t) return t.sortId ~= nil end, 0) end
+		GT.sorts = {}
+		local function tab(i, nm, fn)
 			local b = New("TextButton", { Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = C_ROW, BorderSizePixel = 0, AutoButtonColor = false, Text = tostring(nm), Font = FONT_B, TextSize = 12, TextColor3 = WHITE, LayoutOrder = i }, sorts)
 			New("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
 			New("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, b)
-			b.MouseButton1Click:Connect(function() box.Text = ""; ui.GT.Fetch("sort", srt.sortId) end)
+			b.MouseButton1Click:Connect(function() box.Text = ""; fn() end)
 		end
-		ui.GT.Fetch("sort", list[1].sortId)
+		for i, srt in ipairs(list) do
+			GT.sorts[#GT.sorts + 1] = srt.sortId
+			tab(i, srt.sortDisplayName or srt.displayName or srt.name or srt.sortName or ("Sort " .. i), function() ui.GT.Fetch("sort", srt.sortId) end)
+		end
+		if #list == 0 then
+			-- the discovery list could not be read, so the home page falls back to popular searches
+			if err then GT.status.Text = "Discovery unavailable (" .. string.sub(err, 1, 60) .. "). Showing popular games." end
+			for i, kw in ipairs({ "Popular", "Obby", "Simulator", "Tycoon", "Horror", "Roleplay", "Fighting", "Racing" }) do
+				tab(i, kw, function() ui.GT.Fetch("search", kw) end)
+			end
+			ui.GT.Fetch("search", "popular")
+			return
+		end
+		ui.GT.Fetch("sort", list[1].sortId, 1)
 	end)
 end
 Module{ Name = "GameTeleporter", Category = "Utility", Desc = "Opens a window with the discovery page and a game search. Click any game to teleport straight into it without leaving.",
@@ -3264,7 +3307,9 @@ local ArrayList = Module{ Name = "ArrayList", Category = "Settings", Desc = "Lis
 		Toggle("Side Bar", true, "Draws a colored bar on the right edge of each entry."),
 		Slider("Opacity", 0, 1, 0.05, 0.45, "How solid the background boxes are."),
 		Slider("Text Size", 12, 26, 1, 16, "Size of the list text in pixels."),
-	} }
+		Mode("Position", { "Top Right", "Top Left", "Bottom Right", "Bottom Left", "Right Middle", "Left Middle" }, "Top Right", "Where the title and array list sit on your screen. The Middle options put them at the side of the screen, halfway down."),
+	},
+	OnChanged = function(m, name) if name == "Position" and ui.ApplyListPos then ui.ApplyListPos() end end }
 local Notifs = Module{ Name = "Notifications", Category = "Settings", Desc = "Shows small pop-ups in the bottom right for warnings, teleports and other events.",
 	Settings = {
 		Slider("Duration", 1, 8, 0.5, 3, "How many seconds each pop-up stays on screen."),
@@ -3612,21 +3657,17 @@ end
 ui.TH = { w = {} }
 function ui.TH.Make(p)
 	local f = New("Frame", { Name = "ZenithTarget", BackgroundTransparency = 1, Visible = false }, ui.TH.root)
-	local bars = {}
-	for i = 1, 8 do
-		local corner, vertical = math.ceil(i / 2), i % 2 == 0
-		local b = New("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new((corner == 2 or corner == 4) and 1 or 0, (corner >= 3) and 1 or 0), Position = UDim2.fromScale((corner == 2 or corner == 4) and 1 or 0, (corner >= 3) and 1 or 0) }, f)
-		bars[i] = { f = b, v = vertical }
-	end
-	local panel = New("Frame", { Position = UDim2.new(1, 10, 0, 0), Size = UDim2.fromOffset(160, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Color3.fromRGB(12, 12, 18), BackgroundTransparency = 0.25, BorderSizePixel = 0 }, f)
-	New("UICorner", { CornerRadius = UDim.new(0, 5) }, panel)
-	New("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 7) }, panel)
+	local panel = New("Frame", { Position = UDim2.new(1, 10, 0, 0), Size = UDim2.fromOffset(190, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Color3.fromRGB(12, 12, 18), BackgroundTransparency = 0.2, BorderSizePixel = 0 }, f)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, panel)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 62), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 9) }, panel)
 	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, panel)
-	local accent = New("Frame", { Position = UDim2.fromOffset(-10, -6), Size = UDim2.new(0, 3, 1, 13), BorderSizePixel = 0 }, panel)
+	local accent = New("Frame", { Position = UDim2.fromOffset(-62, -8), Size = UDim2.new(0, 3, 1, 17), BorderSizePixel = 0 }, panel)
+	local img = New("ImageLabel", { Position = UDim2.fromOffset(-52, 0), Size = UDim2.fromOffset(44, 44), BackgroundColor3 = Color3.fromRGB(30, 30, 40), BorderSizePixel = 0 }, panel)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, img)
 	local txt = New("TextLabel", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, RichText = true, LayoutOrder = 1 }, panel)
 	local hbg = New("Frame", { Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Color3.fromRGB(40, 40, 52), BorderSizePixel = 0, LayoutOrder = 2 }, panel)
 	local hfill = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, hbg)
-	local w = { f = f, bars = bars, panel = panel, accent = accent, txt = txt, hbg = hbg, hfill = hfill }
+	local w = { f = f, panel = panel, accent = accent, img = img, txt = txt, hbg = hbg, hfill = hfill }
 	ui.TH.w[p] = w
 	return w
 end
@@ -3639,15 +3680,14 @@ function ui.TH.Destroy()
 	ui.TH.w = {}
 	if ui.TH.root then ui.TH.root:Destroy(); ui.TH.root = nil end
 end
-Module{ Name = "TargetHUD", Category = "Render", Desc = "When your cursor gets near a player, a targeting graphic locks onto them and shows their name, health, distance and speed.",
+Module{ Name = "TargetHUD", Category = "Render", Desc = "When your cursor gets near a player, an info card with their picture, name, health, distance and speed appears next to them.",
 	Settings = {
-		Slider("Cursor Range", 40, 600, 10, 160, "How close, in pixels, your cursor has to be to a player for the targeting graphic to show."),
+		Slider("Cursor Range", 40, 600, 10, 160, "How close, in pixels, your cursor has to be to a player for their info card to show."),
 		Slider("Max Distance", 100, 5000, 50, 1500, D_DIST),
 		Toggle("Show Name", true, "Shows the player's display name and username."),
 		Toggle("Show Health", true, "Shows their health number and a health bar."),
 		Toggle("Show Distance", true, "Shows how far away they are, in studs."),
 		Toggle("Show Speed", true, "Shows how fast they are moving, in studs per second."),
-		Toggle("Animate", true, "Makes the brackets pulse."),
 		Toggle("Team Check", false, D_TEAM),
 	},
 	OnEnable = function(m)
@@ -3682,16 +3722,13 @@ Module{ Name = "TargetHUD", Category = "Render", Desc = "When your cursor gets n
 						if near <= V["Cursor Range"] then
 							show = true
 							local w = ui.TH.w[p] or ui.TH.Make(p)
-							local pad = V.Animate and (5 + math.sin(t * 5) * 2) or 5
 							local col = Accent(0)
-							w.f.Position = UDim2.fromOffset(x1 - pad, y1 - pad)
-							w.f.Size = UDim2.fromOffset(x2 - x1 + pad * 2, y2 - y1 + pad * 2)
-							local L = math.clamp((x2 - x1) * 0.3, 8, 26)
+							w.f.Position = UDim2.fromOffset(x1, y1)
+							w.f.Size = UDim2.fromOffset(x2 - x1, y2 - y1)
 							local fade = 1 - math.clamp(near / V["Cursor Range"], 0, 1) * 0.6
-							for _, b in ipairs(w.bars) do
-								b.f.Size = b.v and UDim2.fromOffset(2, L) or UDim2.fromOffset(L, 2)
-								b.f.BackgroundColor3 = col
-								b.f.BackgroundTransparency = 1 - fade
+							if w.uid ~= p.UserId then
+								w.uid = p.UserId
+								w.img.Image = "rbxthumb://type=AvatarHeadShot&id=" .. p.UserId .. "&w=150&h=150"
 							end
 							w.accent.BackgroundColor3 = col
 							w.hfill.BackgroundColor3 = Color3.fromHSV(math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1) * 0.33, 0.8, 1)
@@ -3704,7 +3741,8 @@ Module{ Name = "TargetHUD", Category = "Render", Desc = "When your cursor gets n
 							if V["Show Distance"] then lines[#lines + 1] = "DIST  " .. math.floor(dist) .. " studs" end
 							if V["Show Speed"] then lines[#lines + 1] = "SPEED  " .. math.floor(root.AssemblyLinearVelocity.Magnitude + 0.5) .. " studs/s" end
 							w.txt.Text = table.concat(lines, "\n")
-							w.panel.BackgroundTransparency = 1 - 0.75 * fade
+							w.panel.BackgroundTransparency = 1 - 0.8 * fade
+							w.img.ImageTransparency = 1 - fade
 							w.f.Visible = true
 						end
 					end
@@ -3808,6 +3846,26 @@ local ListHolder = New("Frame", { Name = "ArrayList", Size = UDim2.new(1, 0, 0, 
 New("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder }, ListHolder)
 
 local ListEntries = {}
+function ui.ApplyListPos()
+	local pos = ArrayList.Values.Position or "Top Right"
+	local left = pos:find("Left") ~= nil
+	local ay = pos:find("Bottom") and 1 or (pos:find("Middle") and 0.5 or 0)
+	local py = pos:find("Bottom") and -6 or (pos:find("Middle") and 0 or 6)
+	ui.ListLeft = left
+	TopRight.AnchorPoint = Vector2.new(left and 0 or 1, ay)
+	TopRight.Position = UDim2.new(left and 0 or 1, left and 6 or -6, ay, py)
+	local ha = left and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Right
+	TopRight:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = ha
+	ListHolder:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = ha
+	if ui.RebuildList then
+		for _, e in pairs(ListEntries) do
+			e.bar.AnchorPoint = Vector2.new(left and 0 or 1, 0)
+			e.bar.Position = UDim2.fromScale(left and 0 or 1, 0)
+			e.lbl.Position = UDim2.fromOffset(left and 2 or 0, 0)
+		end
+		ui.RebuildList()
+	end
+end
 local TWEEN_IN = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TWEEN_OUT = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
@@ -3826,10 +3884,10 @@ end
 local function CreateEntry(w, rowH)
 	local e = { idx = 1, w = w, h = rowH }
 	e.outer = New("Frame", { Size = UDim2.fromOffset(w, 0), BackgroundTransparency = 1, ClipsDescendants = true, BorderSizePixel = 0 }, ListHolder)
-	e.inner = New("Frame", { Size = UDim2.new(1, 0, 0, rowH), Position = UDim2.fromScale(1, 0), BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0 }, e.outer)
+	e.inner = New("Frame", { Size = UDim2.new(1, 0, 0, rowH), Position = UDim2.fromScale(ui.ListLeft and -1 or 1, 0), BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0 }, e.outer)
 	e.lbl = New("TextLabel", { BackgroundTransparency = 1, Font = FONT, RichText = true, TextXAlignment = Enum.TextXAlignment.Left }, e.inner)
 	New("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, e.lbl)
-	e.bar = New("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, 2, 1, 0), BorderSizePixel = 0 }, e.inner)
+	e.bar = New("Frame", { AnchorPoint = Vector2.new(ui.ListLeft and 0 or 1, 0), Position = UDim2.fromScale(ui.ListLeft and 0 or 1, 0), Size = UDim2.new(0, 2, 1, 0), BorderSizePixel = 0 }, e.inner)
 	AddPainter(e.lbl, function() e.lbl.TextColor3 = Accent(e.idx * 0.03) end)
 	AddPainter(e.bar, function() e.bar.BackgroundColor3 = Accent(e.idx * 0.03) end)
 	e.tw = TweenService:Create(e.outer, TWEEN_IN, { Size = UDim2.fromOffset(w, rowH) })
@@ -3850,6 +3908,7 @@ local function UpdateEntry(e, it, V, order, rowH)
 	end
 	e.inner.BackgroundTransparency = V.Background and (1 - V.Opacity) or 1
 	e.lbl.Size = UDim2.new(1, V["Side Bar"] and -2 or 0, 1, 0)
+	e.lbl.Position = UDim2.fromOffset((ui.ListLeft and V["Side Bar"]) and 2 or 0, 0)
 	e.lbl.TextSize = V["Text Size"]
 	e.lbl.TextStrokeTransparency = V.Background and 1 or 0.6
 	local txt = it.name
@@ -3860,7 +3919,7 @@ end
 
 local function RemoveEntry(e)
 	if e.tw then e.tw:Cancel(); e.tw = nil end
-	TweenService:Create(e.inner, TWEEN_OUT, { Position = UDim2.fromScale(1, 0) }):Play()
+	TweenService:Create(e.inner, TWEEN_OUT, { Position = UDim2.fromScale(ui.ListLeft and -1 or 1, 0) }):Play()
 	local t = TweenService:Create(e.outer, TWEEN_OUT, { Size = UDim2.fromOffset(e.w, 0) })
 	t.Completed:Connect(function() e.outer:Destroy() end)
 	t:Play()
@@ -3895,6 +3954,7 @@ local function RebuildArrayList()
 	end
 end
 ui.RebuildList = RebuildArrayList
+Safe(ui.ApplyListPos)
 
 ----------------------------------------------------------------------
 -- menu root
