@@ -252,6 +252,66 @@ function ui.DrawLogo(parent, height, opts)
 			end)
 		end
 	end
+	-- first choice: paint the logo once into a high resolution image with smooth edges
+	local okImg = pcall(function()
+		local k = math.clamp(math.floor(900 / math.max(FW * s, height)), 1, 5)
+		local sr = s * k
+		local TW, TH = math.ceil(FW * sr), math.ceil(height * k)
+		local A = table.create(TW * TH, 0)
+		local SUB = 4
+		local function addPoly(poly)
+			local n = #poly / 2
+			local ymin, ymax = math.huge, -math.huge
+			for i = 2, #poly, 2 do ymin = math.min(ymin, poly[i]); ymax = math.max(ymax, poly[i]) end
+			for r = math.max(0, math.floor((ymin - OY) * sr)), math.min(TH - 1, math.ceil((ymax - OY) * sr) - 1) do
+				for q = 0, SUB - 1 do
+					local sy = OY + (r + (q + 0.5) / SUB) / sr
+					local xs = {}
+					for i = 1, n do
+						local j = i % n + 1
+						local ax, ay, bx, by = poly[2 * i - 1], poly[2 * i], poly[2 * j - 1], poly[2 * j]
+						if (ay <= sy and sy < by) or (by <= sy and sy < ay) then table.insert(xs, ax + (sy - ay) / (by - ay) * (bx - ax)) end
+					end
+					table.sort(xs)
+					for t = 1, #xs - 1, 2 do
+						local pa, pb = (xs[t] - OX) * sr, (xs[t + 1] - OX) * sr
+						local c0, c1 = math.max(0, math.floor(pa)), math.min(TW - 1, math.floor(pb))
+						for c = c0, c1 do
+							local cover = math.min(pb, c + 1) - math.max(pa, c)
+							if cover > 0 then local idx = r * TW + c + 1; A[idx] = math.min(1, A[idx] + cover / SUB) end
+						end
+					end
+				end
+			end
+		end
+		for _, poly in ipairs(ui.LogoShapes.Mark) do addPoly(poly) end
+		if opts.text then for _, poly in ipairs(ui.LogoShapes.Letters) do addPoly(poly) end end
+		for _, d in ipairs(ui.LogoShapes.Dots) do
+			local cx, cy, rad = (d[1] - OX) * sr, (d[2] - OY) * sr, math.max(d[3] * sr, 1)
+			for r = math.max(0, math.floor(cy - rad - 1)), math.min(TH - 1, math.ceil(cy + rad + 1)) do
+				for c = math.max(0, math.floor(cx - rad - 1)), math.min(TW - 1, math.ceil(cx + rad + 1)) do
+					local hit = 0
+					for qy = 0, 3 do for qx = 0, 3 do
+						local dx, dy = c + (qx + 0.5) / 4 - cx, r + (qy + 0.5) / 4 - cy
+						if dx * dx + dy * dy <= rad * rad then hit += 1 end
+					end end
+					if hit > 0 then local idx = r * TW + c + 1; A[idx] = math.min(1, A[idx] + hit / 16) end
+				end
+			end
+		end
+		local buf = buffer.create(TW * TH * 4)
+		for i = 1, TW * TH do
+			local o = (i - 1) * 4
+			buffer.writeu8(buf, o, 255); buffer.writeu8(buf, o + 1, 255); buffer.writeu8(buf, o + 2, 255)
+			buffer.writeu8(buf, o + 3, math.floor(A[i] * 255 + 0.5))
+		end
+		local ei = game:GetService("AssetService"):CreateEditableImage({ Size = Vector2.new(TW, TH) })
+		ei:WritePixelsBuffer(Vector2.zero, Vector2.new(TW, TH), buf)
+		local img = New("ImageLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ImageColor3 = fixed or WHITE }, root)
+		img.ImageContent = Content.fromObject(ei)
+		if not fixed then AddPainter(img, function() img.ImageColor3 = Accent(0) end) end
+	end)
+	if okImg then return root end
 	for i, p in ipairs(ui.LogoShapes.Mark) do fill(p, 0) end
 	for i, d in ipairs(ui.LogoShapes.Dots) do
 		local size = math.max(2, d[3] * 2 * s)
@@ -272,7 +332,7 @@ function ui.Splash(onDone)
 	New("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0), Size = UDim2.fromOffset(300, 18), BackgroundTransparency = 1, Font = FONT, TextSize = 13, TextColor3 = C_DIM, Text = "ZENITH CLIENT  " .. VERSION }, cg)
 	-- everything else stays hidden (shrunk to nothing) until the logo shoots outward into it
 	local targets = {}
-	for _, f in ipairs({ ui.TopRight, ui.Gui:FindFirstChild("Info") or false, ui.Gui:FindFirstChild("ZenithTabGui") or false }) do
+	for _, f in ipairs({ ui.TopRight, ui.Gui:FindFirstChild("WatermarkHolder") or false, ui.Gui:FindFirstChild("Info") or false, ui.Gui:FindFirstChild("ZenithTabGui") or false }) do
 		if f then
 			targets[#targets + 1] = { f = f, pos = f.Position, us = New("UIScale", { Name = "ZSplash", Scale = 0.001 }, f) }
 		end
@@ -1682,7 +1742,8 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title
 	end,
 	OnEnable = function(m)
 		-- title: sits at the top of the same right-aligned column as the array list
-		local wm = New("Frame", { Name = "Watermark", Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, LayoutOrder = 0 }, ui.TopRight)
+		m._wmHolder = New("Frame", { Name = "WatermarkHolder", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -6, 0, 6), Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1 }, ui.Gui)
+		local wm = New("Frame", { Name = "Watermark", Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0, LayoutOrder = 0 }, m._wmHolder)
 		local wmLabel = New("TextLabel", { Size = UDim2.new(), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, Font = FONT_B, TextSize = 20, RichText = true, Text = "" }, wm)
 		local wmLogo = ui.DrawLogo(wm, 18)
 		wmLogo.Position = UDim2.fromOffset(7, 5)
@@ -1701,6 +1762,7 @@ HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title
 		m._wm, m._wmLabel, m._wmLine, m._info, m._bar, m._label = wm, wmLabel, wmLine, info, bar, label
 	end,
 	OnDisable = function(m)
+		if m._wmHolder then m._wmHolder:Destroy(); m._wmHolder = nil end
 		if m._wm then m._wm:Destroy() end
 		if m._info then m._info:Destroy() end
 		m._wm, m._wmLabel, m._wmLine, m._info, m._bar, m._label = nil, nil, nil, nil, nil, nil
@@ -3116,65 +3178,6 @@ Module{ Name = "PartBlast", Category = "Utility", Desc = "While on, every unanch
 
 -- Instant Respawn: asks the server to respawn you as soon as you die (needs an executor that can fire that signal),
 -- and can put you back where you died
-function ui.IRRemote(m)
-	local obj
-	local path = tostring(m.Values["Remote Path"] or ""):gsub("%s", "")
-	if path ~= "" then
-		obj = game
-		for part in path:gmatch("[^%.]+") do
-			obj = obj and (obj:FindFirstChild(part) or (obj == game and pcall(game.GetService, game, part) and game:GetService(part)) or nil)
-		end
-	else
-		if m._remote == nil then
-			m._remote = false
-			local names = { loadchar = true, loadcharacter = true, respawn = true, respawnplayer = true, spawnplayer = true, requestrespawn = true, resetcharacter = true }
-			for _, root in ipairs({ workspace, game:GetService("ReplicatedStorage") }) do
-				for _, d in ipairs(root:GetDescendants()) do
-					if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and names[d.Name:lower()] then m._remote = d break end
-				end
-				if m._remote then break end
-			end
-		end
-		obj = m._remote or nil
-	end
-	if not obj then return end
-	if obj:IsA("RemoteFunction") then task.spawn(function() pcall(function() obj:InvokeServer() end) end)
-	elseif obj:IsA("RemoteEvent") then pcall(function() obj:FireServer() end) end
-end
-Module{ Name = "InstantRespawn", Category = "Player", Desc = "When you die, tries to make the server respawn you right away instead of waiting out the death timer. With Respawn Here on, you reappear where you died. The instant part depends on your executor.",
-	Settings = {
-		Toggle("Respawn Here", false, "Puts you back where you died as soon as your new character loads, instead of at a spawn."),
-		Toggle("Use Executor Signal", true, "Fires the death signal to the server as soon as you die, which asks it to respawn you now. Needs an executor with replicatesignal."),
-		Toggle("Use Game Remote", true, "Many games have their own respawn remote (Prison Life uses one called loadchar). When you die this finds and fires it, which respawns you instantly in those games."),
-		{ Name = "Remote Path", Type = "Text", Default = "", Desc = "Optional. The full path of the game's respawn remote, like Workspace.Remote.loadchar. Leave empty to search automatically.", Placeholder = "Workspace.Remote.loadchar" },
-	},
-	OnEnable = function(m)
-		local function bind(c)
-			local h = c:WaitForChild("Humanoid", 5)
-			if not h then return end
-			h.Died:Connect(function()
-				local r = c:FindFirstChild("HumanoidRootPart")
-				if r then m._death = r.CFrame end
-				if m.Enabled and m.Values["Use Game Remote"] then ui.IRRemote(m) end
-				if m.Enabled and m.Values["Use Executor Signal"] and type(replicatesignal) == "function" then
-					pcall(function() replicatesignal(LP.ConnectDiedSignalBackend) end)
-				end
-			end)
-		end
-		if LP.Character then task.spawn(bind, LP.Character) end
-		Hook(m, LP.CharacterAdded, function(c)
-			task.spawn(bind, c)
-			local cf = m._death
-			m._death = nil
-			if cf and m.Values["Respawn Here"] then
-				local r = c:WaitForChild("HumanoidRootPart", 5)
-				if r then
-					for _ = 1, 4 do task.wait(0.1); r.CFrame = cf end
-				end
-			end
-		end)
-	end }
-
 Module{ Name = "ServerHop", Category = "Utility", Desc = "Moves you to a different public server of this game.",
 	Settings = { Mode("Server", { "Random", "Smallest", "Largest" }, "Random", "Which server to join: any other server, the emptiest one, or the fullest one that still has room.") },
 	Action = function(m)
@@ -3307,7 +3310,7 @@ local ArrayList = Module{ Name = "ArrayList", Category = "Settings", Desc = "Lis
 		Toggle("Side Bar", true, "Draws a colored bar on the right edge of each entry."),
 		Slider("Opacity", 0, 1, 0.05, 0.45, "How solid the background boxes are."),
 		Slider("Text Size", 12, 26, 1, 16, "Size of the list text in pixels."),
-		Mode("Position", { "Top Right", "Top Left", "Bottom Right", "Bottom Left", "Right Middle", "Left Middle" }, "Top Right", "Where the title and array list sit on your screen. The Middle options put them at the side of the screen, halfway down."),
+		Mode("Position", { "Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle" }, "Top Right", "Where the array list sits on your screen. Middle puts it a bit right of the center of the screen, halfway down. The title stays in the top right."),
 	},
 	OnChanged = function(m, name) if name == "Position" and ui.ApplyListPos then ui.ApplyListPos() end end }
 local Notifs = Module{ Name = "Notifications", Category = "Settings", Desc = "Shows small pop-ups in the bottom right for warnings, teleports and other events.",
@@ -3653,103 +3656,86 @@ local function SetLine(f, a, b, thick)
 	f.Visible = true
 end
 
--- Target HUD: when your cursor is near a player, a targeting graphic locks onto them with their name, health, distance and speed
-ui.TH = { w = {} }
-function ui.TH.Make(p)
-	local f = New("Frame", { Name = "ZenithTarget", BackgroundTransparency = 1, Visible = false }, ui.TH.root)
-	local panel = New("Frame", { Position = UDim2.new(1, 10, 0, 0), Size = UDim2.fromOffset(190, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Color3.fromRGB(12, 12, 18), BackgroundTransparency = 0.2, BorderSizePixel = 0 }, f)
-	New("UICorner", { CornerRadius = UDim.new(0, 6) }, panel)
-	New("UIPadding", { PaddingLeft = UDim.new(0, 62), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 9) }, panel)
-	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, panel)
-	local accent = New("Frame", { Position = UDim2.fromOffset(-62, -8), Size = UDim2.new(0, 3, 1, 17), BorderSizePixel = 0 }, panel)
-	local img = New("ImageLabel", { Position = UDim2.fromOffset(-52, 0), Size = UDim2.fromOffset(44, 44), BackgroundColor3 = Color3.fromRGB(30, 30, 40), BorderSizePixel = 0 }, panel)
-	New("UICorner", { CornerRadius = UDim.new(0, 6) }, img)
-	local txt = New("TextLabel", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, RichText = true, LayoutOrder = 1 }, panel)
-	local hbg = New("Frame", { Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Color3.fromRGB(40, 40, 52), BorderSizePixel = 0, LayoutOrder = 2 }, panel)
-	local hfill = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, hbg)
-	local w = { f = f, panel = panel, accent = accent, img = img, txt = txt, hbg = hbg, hfill = hfill }
-	ui.TH.w[p] = w
-	return w
-end
-function ui.TH.Hide(p)
-	local w = ui.TH.w[p]
-	if w then w.f.Visible = false end
+-- Target HUD: a small info card for whoever your cursor is closest to (one player at a time)
+ui.TH = {}
+function ui.TH.Build()
+	if ui.TH.card then return end
+	local card = New("Frame", { Name = "ZenithTarget", Size = UDim2.fromOffset(188, 52), BackgroundColor3 = Color3.fromRGB(14, 14, 20), BackgroundTransparency = 0.12, BorderSizePixel = 0, Visible = false, ZIndex = 3 }, ui.Gui)
+	New("UICorner", { CornerRadius = UDim.new(0, 7) }, card)
+	local stroke = New("UIStroke", { Thickness = 1, Transparency = 0.45 }, card)
+	local c = { card = card, stroke = stroke }
+	c.img = New("ImageLabel", { Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(40, 40), BackgroundColor3 = Color3.fromRGB(30, 30, 40), BorderSizePixel = 0 }, card)
+	New("UICorner", { CornerRadius = UDim.new(0, 6) }, c.img)
+	c.name = New("TextLabel", { Position = UDim2.fromOffset(54, 6), Size = UDim2.new(1, -60, 0, 16), BackgroundTransparency = 1, Font = FONT_B, TextSize = 13, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, Text = "" }, card)
+	c.stats = New("TextLabel", { Position = UDim2.fromOffset(54, 23), Size = UDim2.new(1, -60, 0, 14), BackgroundTransparency = 1, Font = FONT, TextSize = 11, TextColor3 = Color3.fromRGB(170, 170, 185), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "" }, card)
+	c.bg = New("Frame", { Position = UDim2.fromOffset(54, 41), Size = UDim2.new(1, -62, 0, 3), BackgroundColor3 = Color3.fromRGB(44, 44, 58), BorderSizePixel = 0 }, card)
+	c.fill = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, c.bg)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, c.bg)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, c.fill)
+	ui.TH.card = c
 end
 function ui.TH.Destroy()
-	for _, w in pairs(ui.TH.w) do pcall(function() w.f:Destroy() end) end
-	ui.TH.w = {}
-	if ui.TH.root then ui.TH.root:Destroy(); ui.TH.root = nil end
+	if ui.TH.card then ui.TH.card.card:Destroy(); ui.TH.card = nil end
 end
-Module{ Name = "TargetHUD", Category = "Render", Desc = "When your cursor gets near a player, an info card with their picture, name, health, distance and speed appears next to them.",
+Module{ Name = "TargetHUD", Category = "Render", Desc = "Shows a small info card with a picture, name, health, distance and speed for the one player your cursor is closest to.",
 	Settings = {
 		Slider("Cursor Range", 40, 600, 10, 160, "How close, in pixels, your cursor has to be to a player for their info card to show."),
 		Slider("Max Distance", 100, 5000, 50, 1500, D_DIST),
-		Toggle("Show Name", true, "Shows the player's display name and username."),
-		Toggle("Show Health", true, "Shows their health number and a health bar."),
+		Toggle("Show Name", true, "Shows the player's @username next to their display name."),
+		Toggle("Show Health", true, "Shows their health and a health bar."),
 		Toggle("Show Distance", true, "Shows how far away they are, in studs."),
 		Toggle("Show Speed", true, "Shows how fast they are moving, in studs per second."),
 		Toggle("Team Check", false, D_TEAM),
 	},
-	OnEnable = function(m)
-		ui.TH.root = New("Frame", { Name = "ZenithTargetHUD", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 3 }, ui.Gui)
-		Hook(m, Players.PlayerRemoving, function(p)
-			local w = ui.TH.w[p]
-			if w then w.f:Destroy(); ui.TH.w[p] = nil end
-		end)
-	end,
+	OnEnable = function(m) ui.TH.Build() end,
 	OnDisable = function(m) ui.TH.Destroy() end,
 	OnRender = function(m)
-		if not ui.TH.root then return end
+		local c = ui.TH.card
+		if not c then return end
 		local V = m.Values
 		local mp = UIS:GetMouseLocation()
 		if ui.Phone and ui.TouchPos then mp = ui.TouchPos end
 		local me = Root()
-		local t = os.clock()
+		local best, bn, bx = nil, V["Cursor Range"] + 1, nil
 		for _, p in ipairs(Players:GetPlayers()) do
 			local ch = p ~= LP and p.Character
 			local root = ch and ch:FindFirstChild("HumanoidRootPart")
 			local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-			local show = false
 			if root and hum and hum.Health > 0 and not (V["Team Check"] and ui.SameTeam(p)) then
 				local dist = me and (root.Position - me.Position).Magnitude or 0
 				if dist <= V["Max Distance"] then
 					local x1, y1, x2, y2 = Project(root, ch)
 					if x1 then
-						local cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-						local cd = (Vector2.new(cx, cy) - mp).Magnitude
-						-- the cursor counts as near when it is inside the player's box or within the range of its center
-						local near = (mp.X >= x1 and mp.X <= x2 and mp.Y >= y1 and mp.Y <= y2) and 0 or cd
-						if near <= V["Cursor Range"] then
-							show = true
-							local w = ui.TH.w[p] or ui.TH.Make(p)
-							local col = Accent(0)
-							w.f.Position = UDim2.fromOffset(x1, y1)
-							w.f.Size = UDim2.fromOffset(x2 - x1, y2 - y1)
-							local fade = 1 - math.clamp(near / V["Cursor Range"], 0, 1) * 0.6
-							if w.uid ~= p.UserId then
-								w.uid = p.UserId
-								w.img.Image = "rbxthumb://type=AvatarHeadShot&id=" .. p.UserId .. "&w=150&h=150"
-							end
-							w.accent.BackgroundColor3 = col
-							w.hfill.BackgroundColor3 = Color3.fromHSV(math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1) * 0.33, 0.8, 1)
-							local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-							w.hfill.Size = UDim2.fromScale(frac, 1)
-							w.hbg.Visible = V["Show Health"]
-							local lines = {}
-							if V["Show Name"] then lines[#lines + 1] = "<b>" .. p.DisplayName .. "</b>  <font color=\"#9a9aaa\">@" .. p.Name .. "</font>" end
-							if V["Show Health"] then lines[#lines + 1] = "HP  " .. math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth) end
-							if V["Show Distance"] then lines[#lines + 1] = "DIST  " .. math.floor(dist) .. " studs" end
-							if V["Show Speed"] then lines[#lines + 1] = "SPEED  " .. math.floor(root.AssemblyLinearVelocity.Magnitude + 0.5) .. " studs/s" end
-							w.txt.Text = table.concat(lines, "\n")
-							w.panel.BackgroundTransparency = 1 - 0.8 * fade
-							w.img.ImageTransparency = 1 - fade
-							w.f.Visible = true
-						end
+						local near = (mp.X >= x1 and mp.X <= x2 and mp.Y >= y1 and mp.Y <= y2) and 0 or (Vector2.new((x1 + x2) / 2, (y1 + y2) / 2) - mp).Magnitude
+						if near < bn then best, bn, bx = p, near, { x1, y1, x2, y2, root, hum, dist } end
 					end
 				end
 			end
-			if not show then ui.TH.Hide(p) end
 		end
+		if not best then c.card.Visible = false return end
+		local x1, y1, x2, y2, root, hum, dist = table.unpack(bx)
+		local col = Accent(0)
+		if c.uid ~= best.UserId then
+			c.uid = best.UserId
+			c.img.Image = "rbxthumb://type=AvatarHeadShot&id=" .. best.UserId .. "&w=150&h=150"
+		end
+		c.name.Text = best.DisplayName .. ((V["Show Name"] and best.DisplayName ~= best.Name) and ("  <font color=\"rgb(150,150,165)\" size=\"11\">@" .. best.Name .. "</font>") or "")
+		local parts = {}
+		if V["Show Health"] then parts[#parts + 1] = "HP " .. math.floor(hum.Health) end
+		if V["Show Distance"] then parts[#parts + 1] = math.floor(dist) .. " studs" end
+		if V["Show Speed"] then parts[#parts + 1] = math.floor(root.AssemblyLinearVelocity.Magnitude + 0.5) .. " st/s" end
+		c.stats.Text = table.concat(parts, "  -  ")
+		c.bg.Visible = V["Show Health"]
+		local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+		c.fill.Size = UDim2.fromScale(frac, 1)
+		c.fill.BackgroundColor3 = Color3.fromHSV(frac * 0.33, 0.8, 1)
+		c.stroke.Color = col
+		local vp = ui.Gui.AbsoluteSize
+		local cw, ch2 = 188, 52
+		local px = x2 + 10
+		if px + cw > vp.X - 4 then px = x1 - cw - 10 end
+		c.card.Position = UDim2.fromOffset(math.clamp(px, 4, vp.X - cw - 4), math.clamp(y1, 4, vp.Y - ch2 - 4))
+		c.card.Visible = true
 	end }
 
 local function UpdateESP()
@@ -3848,23 +3834,29 @@ New("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Right, Sort
 local ListEntries = {}
 function ui.ApplyListPos()
 	local pos = ArrayList.Values.Position or "Top Right"
-	local left = pos:find("Left") ~= nil
-	local ay = pos:find("Bottom") and 1 or (pos:find("Middle") and 0.5 or 0)
-	local py = pos:find("Bottom") and -6 or (pos:find("Middle") and 0 or 6)
+	if pos == "Right Middle" or pos == "Left Middle" then pos = "Middle" end
+	local mid = pos == "Middle"
+	local left = mid or pos:find("Left") ~= nil
+	local ax, ay, px, py
+	if mid then ax, ay, px, py = 0, 0.5, UDim.new(0.6, 0), 0
+	else
+		ax = left and 0 or 1
+		ay = pos:find("Bottom") and 1 or 0
+		px = UDim.new(ax, left and 6 or -6)
+		py = pos:find("Bottom") and -6 or (pos == "Top Right" and 40 or 6)
+	end
 	ui.ListLeft = left
-	TopRight.AnchorPoint = Vector2.new(left and 0 or 1, ay)
-	TopRight.Position = UDim2.new(left and 0 or 1, left and 6 or -6, ay, py)
+	TopRight.AnchorPoint = Vector2.new(ax, ay)
+	TopRight.Position = UDim2.new(px.Scale, px.Offset, ay, py)
 	local ha = left and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Right
 	TopRight:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = ha
 	ListHolder:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = ha
-	if ui.RebuildList then
-		for _, e in pairs(ListEntries) do
-			e.bar.AnchorPoint = Vector2.new(left and 0 or 1, 0)
-			e.bar.Position = UDim2.fromScale(left and 0 or 1, 0)
-			e.lbl.Position = UDim2.fromOffset(left and 2 or 0, 0)
-		end
-		ui.RebuildList()
+	for _, e in pairs(ListEntries) do
+		e.bar.AnchorPoint = Vector2.new(left and 0 or 1, 0)
+		e.bar.Position = UDim2.fromScale(left and 0 or 1, 0)
+		e.lbl.Position = UDim2.fromOffset(left and 2 or 0, 0)
 	end
+	if ui.RebuildList then ui.RebuildList() end
 end
 local TWEEN_IN = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TWEEN_OUT = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
