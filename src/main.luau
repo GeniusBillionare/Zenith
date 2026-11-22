@@ -3073,10 +3073,37 @@ Module{ Name = "PartBlast", Category = "Utility", Desc = "While on, every unanch
 
 -- Instant Respawn: asks the server to respawn you as soon as you die (needs an executor that can fire that signal),
 -- and can put you back where you died
+function ui.IRRemote(m)
+	local obj
+	local path = tostring(m.Values["Remote Path"] or ""):gsub("%s", "")
+	if path ~= "" then
+		obj = game
+		for part in path:gmatch("[^%.]+") do
+			obj = obj and (obj:FindFirstChild(part) or (obj == game and pcall(game.GetService, game, part) and game:GetService(part)) or nil)
+		end
+	else
+		if m._remote == nil then
+			m._remote = false
+			local names = { loadchar = true, loadcharacter = true, respawn = true, respawnplayer = true, spawnplayer = true, requestrespawn = true, resetcharacter = true }
+			for _, root in ipairs({ workspace, game:GetService("ReplicatedStorage") }) do
+				for _, d in ipairs(root:GetDescendants()) do
+					if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and names[d.Name:lower()] then m._remote = d break end
+				end
+				if m._remote then break end
+			end
+		end
+		obj = m._remote or nil
+	end
+	if not obj then return end
+	if obj:IsA("RemoteFunction") then task.spawn(function() pcall(function() obj:InvokeServer() end) end)
+	elseif obj:IsA("RemoteEvent") then pcall(function() obj:FireServer() end) end
+end
 Module{ Name = "InstantRespawn", Category = "Player", Desc = "When you die, tries to make the server respawn you right away instead of waiting out the death timer. With Respawn Here on, you reappear where you died. The instant part depends on your executor.",
 	Settings = {
 		Toggle("Respawn Here", false, "Puts you back where you died as soon as your new character loads, instead of at a spawn."),
 		Toggle("Use Executor Signal", true, "Fires the death signal to the server as soon as you die, which asks it to respawn you now. Needs an executor with replicatesignal."),
+		Toggle("Use Game Remote", true, "Many games have their own respawn remote (Prison Life uses one called loadchar). When you die this finds and fires it, which respawns you instantly in those games."),
+		{ Name = "Remote Path", Type = "Text", Default = "", Desc = "Optional. The full path of the game's respawn remote, like Workspace.Remote.loadchar. Leave empty to search automatically.", Placeholder = "Workspace.Remote.loadchar" },
 	},
 	OnEnable = function(m)
 		local function bind(c)
@@ -3085,6 +3112,7 @@ Module{ Name = "InstantRespawn", Category = "Player", Desc = "When you die, trie
 			h.Died:Connect(function()
 				local r = c:FindFirstChild("HumanoidRootPart")
 				if r then m._death = r.CFrame end
+				if m.Enabled and m.Values["Use Game Remote"] then ui.IRRemote(m) end
 				if m.Enabled and m.Values["Use Executor Signal"] and type(replicatesignal) == "function" then
 					pcall(function() replicatesignal(LP.ConnectDiedSignalBackend) end)
 				end
@@ -3579,6 +3607,112 @@ local function SetLine(f, a, b, thick)
 	f.Rotation = math.deg(math.atan2(dy, dx))
 	f.Visible = true
 end
+
+-- Target HUD: when your cursor is near a player, a targeting graphic locks onto them with their name, health, distance and speed
+ui.TH = { w = {} }
+function ui.TH.Make(p)
+	local f = New("Frame", { Name = "ZenithTarget", BackgroundTransparency = 1, Visible = false }, ui.TH.root)
+	local bars = {}
+	for i = 1, 8 do
+		local corner, vertical = math.ceil(i / 2), i % 2 == 0
+		local b = New("Frame", { BorderSizePixel = 0, AnchorPoint = Vector2.new((corner == 2 or corner == 4) and 1 or 0, (corner >= 3) and 1 or 0), Position = UDim2.fromScale((corner == 2 or corner == 4) and 1 or 0, (corner >= 3) and 1 or 0) }, f)
+		bars[i] = { f = b, v = vertical }
+	end
+	local panel = New("Frame", { Position = UDim2.new(1, 10, 0, 0), Size = UDim2.fromOffset(160, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Color3.fromRGB(12, 12, 18), BackgroundTransparency = 0.25, BorderSizePixel = 0 }, f)
+	New("UICorner", { CornerRadius = UDim.new(0, 5) }, panel)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 7) }, panel)
+	New("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, panel)
+	local accent = New("Frame", { Position = UDim2.fromOffset(-10, -6), Size = UDim2.new(0, 3, 1, 13), BorderSizePixel = 0 }, panel)
+	local txt = New("TextLabel", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Text = "", Font = FONT, TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, RichText = true, LayoutOrder = 1 }, panel)
+	local hbg = New("Frame", { Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Color3.fromRGB(40, 40, 52), BorderSizePixel = 0, LayoutOrder = 2 }, panel)
+	local hfill = New("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0 }, hbg)
+	local w = { f = f, bars = bars, panel = panel, accent = accent, txt = txt, hbg = hbg, hfill = hfill }
+	ui.TH.w[p] = w
+	return w
+end
+function ui.TH.Hide(p)
+	local w = ui.TH.w[p]
+	if w then w.f.Visible = false end
+end
+function ui.TH.Destroy()
+	for _, w in pairs(ui.TH.w) do pcall(function() w.f:Destroy() end) end
+	ui.TH.w = {}
+	if ui.TH.root then ui.TH.root:Destroy(); ui.TH.root = nil end
+end
+Module{ Name = "TargetHUD", Category = "Render", Desc = "When your cursor gets near a player, a targeting graphic locks onto them and shows their name, health, distance and speed.",
+	Settings = {
+		Slider("Cursor Range", 40, 600, 10, 160, "How close, in pixels, your cursor has to be to a player for the targeting graphic to show."),
+		Slider("Max Distance", 100, 5000, 50, 1500, D_DIST),
+		Toggle("Show Name", true, "Shows the player's display name and username."),
+		Toggle("Show Health", true, "Shows their health number and a health bar."),
+		Toggle("Show Distance", true, "Shows how far away they are, in studs."),
+		Toggle("Show Speed", true, "Shows how fast they are moving, in studs per second."),
+		Toggle("Animate", true, "Makes the brackets pulse."),
+		Toggle("Team Check", false, D_TEAM),
+	},
+	OnEnable = function(m)
+		ui.TH.root = New("Frame", { Name = "ZenithTargetHUD", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 3 }, ui.Gui)
+		Hook(m, Players.PlayerRemoving, function(p)
+			local w = ui.TH.w[p]
+			if w then w.f:Destroy(); ui.TH.w[p] = nil end
+		end)
+	end,
+	OnDisable = function(m) ui.TH.Destroy() end,
+	OnRender = function(m)
+		if not ui.TH.root then return end
+		local V = m.Values
+		local mp = UIS:GetMouseLocation()
+		if ui.Phone and ui.TouchPos then mp = ui.TouchPos end
+		local me = Root()
+		local t = os.clock()
+		for _, p in ipairs(Players:GetPlayers()) do
+			local ch = p ~= LP and p.Character
+			local root = ch and ch:FindFirstChild("HumanoidRootPart")
+			local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+			local show = false
+			if root and hum and hum.Health > 0 and not (V["Team Check"] and ui.SameTeam(p)) then
+				local dist = me and (root.Position - me.Position).Magnitude or 0
+				if dist <= V["Max Distance"] then
+					local x1, y1, x2, y2 = Project(root, ch)
+					if x1 then
+						local cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+						local cd = (Vector2.new(cx, cy) - mp).Magnitude
+						-- the cursor counts as near when it is inside the player's box or within the range of its center
+						local near = (mp.X >= x1 and mp.X <= x2 and mp.Y >= y1 and mp.Y <= y2) and 0 or cd
+						if near <= V["Cursor Range"] then
+							show = true
+							local w = ui.TH.w[p] or ui.TH.Make(p)
+							local pad = V.Animate and (5 + math.sin(t * 5) * 2) or 5
+							local col = Accent(0)
+							w.f.Position = UDim2.fromOffset(x1 - pad, y1 - pad)
+							w.f.Size = UDim2.fromOffset(x2 - x1 + pad * 2, y2 - y1 + pad * 2)
+							local L = math.clamp((x2 - x1) * 0.3, 8, 26)
+							local fade = 1 - math.clamp(near / V["Cursor Range"], 0, 1) * 0.6
+							for _, b in ipairs(w.bars) do
+								b.f.Size = b.v and UDim2.fromOffset(2, L) or UDim2.fromOffset(L, 2)
+								b.f.BackgroundColor3 = col
+								b.f.BackgroundTransparency = 1 - fade
+							end
+							w.accent.BackgroundColor3 = col
+							w.hfill.BackgroundColor3 = Color3.fromHSV(math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1) * 0.33, 0.8, 1)
+							local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+							w.hfill.Size = UDim2.fromScale(frac, 1)
+							w.hbg.Visible = V["Show Health"]
+							local lines = {}
+							if V["Show Name"] then lines[#lines + 1] = "<b>" .. p.DisplayName .. "</b>  <font color=\"#9a9aaa\">@" .. p.Name .. "</font>" end
+							if V["Show Health"] then lines[#lines + 1] = "HP  " .. math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth) end
+							if V["Show Distance"] then lines[#lines + 1] = "DIST  " .. math.floor(dist) .. " studs" end
+							if V["Show Speed"] then lines[#lines + 1] = "SPEED  " .. math.floor(root.AssemblyLinearVelocity.Magnitude + 0.5) .. " studs/s" end
+							w.txt.Text = table.concat(lines, "\n")
+							w.panel.BackgroundTransparency = 1 - 0.75 * fade
+							w.f.Visible = true
+						end
+					end
+				end
+			end
+			if not show then ui.TH.Hide(p) end
+		end
+	end }
 
 local function UpdateESP()
 	if not (ESP.Enabled or Names.Enabled or Tracers.Enabled) then
