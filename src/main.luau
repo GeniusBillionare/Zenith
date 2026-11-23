@@ -331,7 +331,7 @@ function ui.Splash(onDone)
 	logo.Position = UDim2.new(0.5, 0, 0.5, -8)
 	New("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0), Size = UDim2.fromOffset(300, 18), BackgroundTransparency = 1, Font = FONT, TextSize = 13, TextColor3 = C_DIM, Text = "ZENITH CLIENT  " .. VERSION }, cg)
 	-- everything else stays hidden (shrunk to nothing) until the logo shoots outward into it
-	pcall(ui.Layout)
+	pcall(ui.Layout, true)
 	ui.Splashing = true
 	local targets = {}
 	for _, f in ipairs({ ui.TopRight, ui.Gui:FindFirstChild("WatermarkHolder") or false, ui.Gui:FindFirstChild("Info") or false, ui.Gui:FindFirstChild("ZenithTabGui") or false }) do
@@ -340,9 +340,14 @@ function ui.Splash(onDone)
 		end
 	end
 	local lus = New("UIScale", { Scale = 1 }, cg)
+	ui.Gui.Enabled = true
 	TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }):Play()
 	task.delay(2, function()
 		local vp = ui.Gui.AbsoluteSize
+		ui.Splashing = false
+		pcall(ui.Layout, true)
+		ui.Splashing = true
+		for _, t in ipairs(targets) do t.pos = t.f.Position end
 		if cg.Parent then
 			TweenService:Create(lus, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1.5 }):Play()
 			local t2 = TweenService:Create(cg, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 1 })
@@ -905,13 +910,18 @@ Module{ Name = "Swim", Category = "Movement", Desc = "Lets you swim through the 
 Module{ Name = "Jetpack", Category = "Movement", Desc = "Gives you a jetpack. Lift pushes you straight up, Steer flies you wherever your camera points.",
 	Settings = {
 		Mode("Mode", { "Lift", "Steer" }, "Lift", "Lift pushes you straight up while it is on. Steer flies you in the direction your camera is facing."),
+		Mode("Method", { "Velocity", "CFrame" }, "Velocity", "Velocity pushes you with physics. CFrame moves you directly, which some games react to less."),
 		Slider("Power", 5, 150, 1, 40, "How fast the jetpack moves you in studs per second."),
 	},
-	OnTick = function(m)
+	OnTick = function(m, dt)
 		local r = Root(); if not r then return end
 		local V = m.Values
 		local v = r.AssemblyLinearVelocity
-		if V.Mode == "Lift" then
+		if V.Method == "CFrame" then
+			local dir = V.Mode == "Lift" and Vector3.new(0, 1, 0) or Camera.CFrame.LookVector
+			r.CFrame += dir * V.Power * (dt or 0.016)
+			r.AssemblyLinearVelocity = Vector3.zero
+		elseif V.Mode == "Lift" then
 			r.AssemblyLinearVelocity = Vector3.new(v.X, V.Power, v.Z)
 		else
 			r.AssemblyLinearVelocity = Camera.CFrame.LookVector * V.Power
@@ -1030,7 +1040,9 @@ Module{ Name = "AntiSit", Category = "Player", Desc = "Stops you from sitting in
 
 Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps your fall speed low the whole way down, softens the landing, and cancels the landing hit itself.",
 	Settings = {
-		Mode("Method", { "Soft Land", "Both", "Clamp Speed" }, "Soft Land", "Soft Land lets you fall normally and only eases your speed down as the ground gets close, so it looks like a regular fall. Clamp Speed never lets you fall faster than Max Fall Speed. Both does both."),
+		Mode("Method", { "Soft Land", "Both", "Clamp Speed", "Fling Trick" }, "Soft Land", "Fling Trick copies what Fling does to your speed (huge while the game checks it, your real speed everywhere you can see), which makes velocity based fall damage read nothing. It switches itself off while Fling is on. Soft Land lets you fall normally and only eases your speed down as the ground gets close, so it looks like a regular fall. Clamp Speed never lets you fall faster than Max Fall Speed. Both does both."),
+		Slider("Mask Power", 100, 100000, 100, 1000, "Fling Trick only. How large the speed is that the game sees. Anyone who touches you while it is active gets pushed, so keep it low."),
+		Toggle("Only In Air", false, "Fling Trick only. Applies the trick only while you are falling and for a moment after landing, instead of all the time."),
 		Slider("Max Fall Speed", 10, 150, 1, 100, "The fastest you can fall while Clamp Speed is on. Lower it if a game's fall damage still gets you."),
 		Slider("Threshold", 20, 120, 1, 45, "Fall speed where Soft Land starts cancelling your speed near the ground."),
 		Toggle("Landing Reset", true, "The moment the game says you landed, your fall speed is pushed toward zero, without breaking the Spike Limit."),
@@ -1038,8 +1050,39 @@ Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps y
 		Toggle("Spike Guard", true, "Fall-damage scripts look for speed that changes too fast, up or down. With this on, your speed is never allowed to change by more than the Spike Limit in one frame. Bigger changes, like stopping on landing, are spread over a few frames."),
 		Slider("Spike Limit", 20, 250, 5, 40, "The most your speed may change in a single frame. Lower is safer against strict games, but slows how fast you can stop."),
 	},
-	OnEnable = function(m) m._hum = nil; m._out = nil end,
+	OnEnable = function(m)
+		m._hum, m._out, m._masked, m._until = nil, nil, false, 0
+		local function flingOn()
+			if not m._fl then for _, x in ipairs(Modules) do if x.Name == "Fling" then m._fl = x break end end end
+			return m._fl and m._fl.Enabled
+		end
+		local function active()
+			if m.Values.Method ~= "Fling Trick" or flingOn() then return false end
+			if not m.Values["Only In Air"] then return true end
+			local h, r = Hum(), Root()
+			if h and r and (h:GetState() == Enum.HumanoidStateType.Freefall or r.AssemblyLinearVelocity.Y < -15) then m._until = os.clock() + 0.6 end
+			return os.clock() < m._until
+		end
+		-- the same timing Fling uses: huge speed while the game's scripts run, your real speed back before anything is drawn
+		Hook(m, RunService.Heartbeat, function()
+			local r = Root()
+			if not r or not active() then m._masked = false return end
+			m._mv = r.AssemblyLinearVelocity
+			local P = m.Values["Mask Power"]
+			r.AssemblyLinearVelocity = m._mv * P + Vector3.new(0, P, 0)
+			m._masked = true
+		end)
+		Hook(m, RunService.RenderStepped, function()
+			local r = Root(); if r and m._masked then r.AssemblyLinearVelocity = m._mv end
+		end)
+		Hook(m, RunService.Stepped, function()
+			local r = Root(); if r and m._masked then r.AssemblyLinearVelocity = m._mv + Vector3.new(0, 0.1, 0) end
+		end)
+	end,
 	OnDisable = function(m)
+		local r0 = Root()
+		if r0 and m._masked and m._mv then r0.AssemblyLinearVelocity = m._mv end
+		m._masked = false
 		local h = Hum()
 		if h then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true) end
 		m._hum = nil
@@ -1047,6 +1090,7 @@ Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps y
 	OnTick = function(m, dt)
 		local r, h = Root(), Hum(); if not r or not h then return end
 		local V = m.Values
+		if V.Method == "Fling Trick" or (m._fl and m._fl.Enabled) then m._out = nil return end
 		if m._hum ~= h then
 			-- a new character: set it up once
 			m._hum = h
@@ -1106,52 +1150,96 @@ Module{ Name = "AntiVoid", Category = "Player", Desc = "If you fall below the vo
 		end
 	end }
 
-Module{ Name = "Blink", Category = "Player", Desc = "Pauses what the server sees of you. You move freely on your screen, but the game still sees you standing where you started. Turn it off and everything you did catches up at once.",
+-- Pausing what the server sees. Anchor: your root part is anchored on your own screen only (anchored parts are not sent
+-- to the server) and you are moved by CFrame instead. Bandwidth / Sender Rate throttle the connection itself.
+ui.DS = {}
+function ui.DS.Start(m)
+	local r = Root()
+	if r then m._ds = { vy = 0 }; r.Anchored = true end
+end
+function ui.DS.Step(m, dt)
+	local r, h, st = Root(), Hum(), m._ds
+	if not r or not h or not st then return end
+	local md, pos = h.MoveDirection, r.Position
+	local hip = h.HipHeight + r.Size.Y / 2
+	local hit = workspace:Raycast(pos, Vector3.new(0, -(hip + 1.5 + math.max(0, -st.vy) * dt), 0), RayParams())
+	local y
+	if hit and st.vy <= 0 then
+		if h.Jump or Down(Enum.KeyCode.Space) then st.vy = h.JumpPower; y = pos.Y + st.vy * dt
+		else st.vy = 0; y = hit.Position.Y + hip end
+	else
+		st.vy -= workspace.Gravity * dt
+		y = pos.Y + st.vy * dt
+	end
+	local np = Vector3.new(pos.X + md.X * h.WalkSpeed * dt, y, pos.Z + md.Z * h.WalkSpeed * dt)
+	local flat = Vector3.new(md.X, 0, md.Z)
+	r.CFrame = flat.Magnitude > 0.1 and CFrame.lookAt(np, np + flat) or (CFrame.new(np) * r.CFrame.Rotation)
+	r.AssemblyLinearVelocity = Vector3.zero
+	r.AssemblyAngularVelocity = Vector3.zero
+end
+function ui.DS.Stop(m)
+	m._ds = nil
+	local r = Root()
+	if r then r.Anchored = false; r.AssemblyLinearVelocity = Vector3.zero end
+end
+function ui.DS.Ghost(m)
+	local ch = LP.Character
+	if not ch then return end
+	local arch = ch.Archivable
+	ch.Archivable = true
+	local copy = ch:Clone()
+	ch.Archivable = arch
+	if not copy then return end
+	copy.Name = "ZenithGhost"
+	for _, d in ipairs(copy:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored, d.CanCollide, d.CanQuery, d.CanTouch = true, false, false, false
+			d.Transparency = d.Name == "HumanoidRootPart" and 1 or math.max(d.Transparency, 0.6)
+		elseif d:IsA("BaseScript") or d:IsA("Humanoid") or d:IsA("Decal") or d:IsA("Highlight") or d:IsA("BillboardGui") then
+			d:Destroy()
+		end
+	end
+	m._mark = copy
+end
+function ui.DS.ShowGhost(m, on)
+	local g = m._mark
+	if not g then return end
+	if on and LP.Character then g:PivotTo(LP.Character:GetPivot()); g.Parent = workspace else g.Parent = nil end
+end
+function ui.NetHold(m, on)
+	local meth = m.Values.Method
+	local useA, useB, useS = meth == "Anchor" or meth == "Auto", meth == "Bandwidth" or meth == "Auto", meth == "Sender Rate" or meth == "Auto"
+	if on then
+		if useA then ui.DS.Start(m) end
+		if useB then pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end) end
+		if useS and type(setfflag) == "function" then pcall(setfflag, "DFIntS2PhysicsSenderRate", "1"); m._ff = true end
+		m._holding = true
+	else
+		m._holding = false
+		if m._ds then ui.DS.Stop(m) end
+		pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
+		if m._ff and type(setfflag) == "function" then pcall(setfflag, "DFIntS2PhysicsSenderRate", "15"); m._ff = nil end
+	end
+end
+function ui.NetStep(m, dt)
+	if not m._holding then return end
+	local meth = m.Values.Method
+	if m._ds then ui.DS.Step(m, dt) end
+	if meth == "Bandwidth" or meth == "Auto" then pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end) end
+end
+
+Module{ Name = "Blink", Category = "Player", Desc = "Pauses what the server sees of you. You move freely on your screen, but other players keep seeing you where you started. Turn it off and everything catches up at once.",
 	Settings = {
-		Mode("Method", { "Auto", "Bandwidth", "Sender Rate" }, "Auto", "Bandwidth cuts your outgoing data to almost nothing. Sender Rate slows how often your position is sent. Auto uses both, which works in more games.", true),
+		Mode("Method", { "Anchor", "Auto", "Bandwidth", "Sender Rate" }, "Anchor", "Anchor freezes you on the server by anchoring your root part on your screen only, and moves you directly instead of with physics, so walls won't stop you. Bandwidth and Sender Rate throttle your connection. Auto uses all three. Anchor works in the most games.", true),
 		Toggle("Ghost Clone", true, "Leaves a see-through copy of your body where the server thinks you are. It disappears when Blink turns off."),
 	},
-	OnTick = function(m)
-		if m.Values.Method ~= "Sender Rate" then pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end) end
-	end,
 	OnEnable = function(m)
-		local used = false
-		if m.Values.Method ~= "Sender Rate" then
-			used = pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(1) end) or used
-		end
-		if m.Values.Method ~= "Bandwidth" and type(setfflag) == "function" then
-			used = pcall(function() setfflag("S2PhysicsSenderRate", "1") end) or used
-			m._ff = used
-		end
-		if not used then
-			ui.Notify("Your executor can't pause outgoing network data, so Blink can't work", false)
-			task.defer(function() SetEnabled(m, false, true) end)
-			return
-		end
-		local ch = LP.Character
-		if ch and m.Values["Ghost Clone"] then
-			local arch = ch.Archivable
-			ch.Archivable = true
-			local copy = ch:Clone()
-			ch.Archivable = arch
-			if copy then
-				copy.Name = "ZenithBlinkGhost"
-				for _, d in ipairs(copy:GetDescendants()) do
-					if d:IsA("BasePart") then
-						d.Anchored, d.CanCollide, d.CanQuery, d.CanTouch = true, false, false, false
-						d.Transparency = d.Name == "HumanoidRootPart" and 1 or math.max(d.Transparency, 0.65)
-					elseif d:IsA("BaseScript") or d:IsA("Humanoid") or d:IsA("Decal") or d:IsA("Highlight") or d:IsA("BillboardGui") then
-						d:Destroy()
-					end
-				end
-				copy.Parent = workspace
-				m._mark = copy
-			end
-		end
+		if m.Values["Ghost Clone"] then ui.DS.Ghost(m); ui.DS.ShowGhost(m, true) end
+		ui.NetHold(m, true)
 	end,
+	OnTick = function(m, dt) ui.NetStep(m, dt) end,
 	OnDisable = function(m)
-		pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
-		if m._ff and type(setfflag) == "function" then pcall(function() setfflag("S2PhysicsSenderRate", "15") end); m._ff = nil end
+		ui.NetHold(m, false)
 		if m._mark then m._mark:Destroy(); m._mark = nil end
 	end }
 
@@ -2287,7 +2375,6 @@ Module{ Name = "Triggerbot", Category = "Combat", Desc = "Automatically uses you
 -- UTILITY
 ----------------------------------------------------------------------
 do
-local Waypoint
 Module{ Name = "ClickTP", Category = "Utility", Desc = "Teleports you to wherever you click in the world.",
 	Settings = { Mode("Mode", { "Ctrl+Click", "Click" }, "Ctrl+Click", "Ctrl+Click needs Left Ctrl held while clicking. Click teleports on every single click.") },
 	OnEnable = function(m)
@@ -2329,13 +2416,70 @@ Module{ Name = "Spectate", Category = "Utility", Desc = "Watch the game through 
 		if h then Camera.CameraSubject = h end
 	end }
 
-Module{ Name = "Set Waypoint", Category = "Utility", Desc = "Saves your current position so you can teleport back to it later.",
-	Action = function() local r = Root(); if r then Waypoint = r.CFrame; ui.Notify("Waypoint saved", true) end end }
-Module{ Name = "Go To Waypoint", Category = "Utility", Desc = "Teleports you to the position you saved with Set Waypoint.",
-	Action = function()
-		local r = Root()
-		if r and Waypoint then r.CFrame = Waypoint; ui.Notify("Teleported to waypoint", true) else ui.Notify("No waypoint set", false) end
-	end }
+-- Waypoints: 10 slots per game, kept in their own file (not part of any config). Each game has its own set.
+ui.WP = { file = "ZenithWaypoints.json" }
+function ui.WP.Key() return tostring(game.GameId ~= 0 and game.GameId or game.PlaceId) end
+function ui.WP.Read()
+	if not ui.CanFS then return {} end
+	local ok, d = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(ui.WP.file)) end)
+	return (ok and type(d) == "table") and d or {}
+end
+function ui.WP.Slots()
+	if ui.CanFS == nil then return {} end -- files are not set up yet while modules are still being defined
+	if not ui.WP.cache then ui.WP.cache = ui.WP.Read()[ui.WP.Key()] or {} end
+	return ui.WP.cache
+end
+function ui.WP.Write()
+	if not ui.CanFS then ui.Notify("Waypoints need an executor with file functions to be saved", false) return end
+	local all = ui.WP.Read()
+	all[ui.WP.Key()] = ui.WP.cache
+	pcall(function() writefile(ui.WP.file, game:GetService("HttpService"):JSONEncode(all)) end)
+end
+function ui.WP.Label(i)
+	local w = ui.WP.Slots()[tostring(i)]
+	return i .. ": " .. (w and w.name or "empty")
+end
+function ui.WP.Labels()
+	local t = {}
+	for i = 1, 10 do t[i] = ui.WP.Label(i) end
+	return t
+end
+function ui.WP.Sel(m)
+	return tonumber(tostring(m.Values.Slot):match("^(%d+)")) or 1
+end
+function ui.WP.Refresh(m)
+	m.Values.Slot = ui.WP.Label(ui.WP.Sel(m))
+	Repaint(m)
+end
+Module{ Name = "Waypoints", Category = "Utility", Passive = true, NoSave = true, Desc = "Ten waypoint slots for the game you are in. Name them, save your position, and teleport back. They are kept per game in their own file, separate from your config.",
+	Settings = {
+		Mode("Slot", function() return ui.WP.Labels() end, "1: empty", "Which of the ten slots the buttons below use."),
+		{ Name = "Name", Type = "Text", Placeholder = "waypoint name", Default = "", Desc = "The name given to the selected slot when you save or rename it." },
+		Button("Save Here", "Saves your current position into the selected slot, using the name above.", function(m)
+			local r = Root()
+			if not r then ui.Notify("You need a character", false) return end
+			local i = ui.WP.Sel(m)
+			local name = tostring(m.Values.Name or "")
+			if name == "" then name = "Waypoint " .. i end
+			ui.WP.Slots()[tostring(i)] = { name = name, cf = { r.CFrame:GetComponents() } }
+			ui.WP.Write(); ui.WP.Refresh(m)
+			ui.Notify("Saved " .. name, true)
+		end),
+		Button("Teleport", "Teleports you to the selected slot.", function(m)
+			local w, r = ui.WP.Slots()[tostring(ui.WP.Sel(m))], Root()
+			if w and r then r.CFrame = CFrame.new(table.unpack(w.cf)); ui.Notify("Teleported to " .. w.name, true)
+			else ui.Notify("That slot is empty", false) end
+		end),
+		Button("Rename", "Gives the selected slot the name above without moving it.", function(m)
+			local w = ui.WP.Slots()[tostring(ui.WP.Sel(m))]
+			local name = tostring(m.Values.Name or "")
+			if w and name ~= "" then w.name = name; ui.WP.Write(); ui.WP.Refresh(m) else ui.Notify("Pick a filled slot and type a name first", false) end
+		end),
+		Button("Clear", "Empties the selected slot.", function(m)
+			ui.WP.Slots()[tostring(ui.WP.Sel(m))] = nil
+			ui.WP.Write(); ui.WP.Refresh(m)
+		end),
+	} }
 end
 Module{ Name = "TP To Spawn", Category = "Utility", Desc = "Teleports you to the first spawn point in the map.",
 	Action = function()
@@ -3067,33 +3211,32 @@ Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekine
 		for _, hl in ipairs(g.hls) do hl.FillColor, hl.OutlineColor = Accent(), Accent() end
 	end }
 
-Module{ Name = "FakeLag", Category = "Player", Desc = "Holds your outgoing data for a set delay, then sends it all at once, over and over. Other players see you stutter and jump forward.",
+Module{ Name = "FakeLag", Category = "Player", Desc = "Holds what the server sees of you for a set delay, then lets it through, over and over. Other players see you stutter and jump forward. A ghost shows where they think you are.",
 	Settings = {
-		Slider("Delay", 50, 2000, 10, 300, "How long, in milliseconds, your data is held back before it is sent."),
-		Slider("Release", 20, 300, 10, 60, "How long, in milliseconds, the held data is let through each time."),
-		Mode("Method", { "Auto", "Bandwidth", "Sender Rate" }, "Auto", "Bandwidth cuts your outgoing data. Sender Rate slows how often your position is sent. Auto uses both."),
+		Slider("Delay", 50, 2000, 10, 300, "How long, in milliseconds, you are held back before the server catches up."),
+		Slider("Release", 20, 300, 10, 60, "How long, in milliseconds, the server is allowed to catch up each time."),
+		Mode("Method", { "Anchor", "Auto", "Bandwidth", "Sender Rate" }, "Anchor", "Anchor works in the most games. Bandwidth and Sender Rate throttle your connection instead. Auto uses all three."),
+		Toggle("Ghost Clone", true, "Shows a see-through copy of you where other players currently see you."),
 	},
 	OnEnable = function(m)
-		m._ok = pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
-		if not m._ok and type(setfflag) ~= "function" then
-			ui.Notify("Your executor can't hold outgoing network data, so FakeLag can't work", false)
-			task.defer(function() SetEnabled(m, false, true) end)
-			return
-		end
+		if m.Values["Ghost Clone"] then ui.DS.Ghost(m) end
 		m._t, m._hold = os.clock(), true
+		ui.DS.ShowGhost(m, true)
+		ui.NetHold(m, true)
 	end,
-	OnTick = function(m)
+	OnTick = function(m, dt)
 		local V = m.Values
 		local now = os.clock()
-		local wait = (m._hold and V.Delay or V.Release) / 1000
-		if now - m._t >= wait then m._hold = not m._hold; m._t = now end
-		local kb, rate = m._hold and 1 or 100000, m._hold and "1" or "15"
-		if V.Method ~= "Sender Rate" then pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(kb) end) end
-		if V.Method ~= "Bandwidth" and type(setfflag) == "function" then pcall(function() setfflag("S2PhysicsSenderRate", rate) end) end
+		if now - m._t >= (m._hold and V.Delay or V.Release) / 1000 then
+			m._hold, m._t = not m._hold, now
+			if m._hold then ui.DS.ShowGhost(m, true); ui.NetHold(m, true)
+			else ui.NetHold(m, false); ui.DS.ShowGhost(m, false) end
+		end
+		ui.NetStep(m, dt)
 	end,
 	OnDisable = function(m)
-		pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
-		if type(setfflag) == "function" then pcall(function() setfflag("S2PhysicsSenderRate", "15") end) end
+		ui.NetHold(m, false)
+		if m._mark then m._mark:Destroy(); m._mark = nil end
 	end }
 
 -- Velocity: like the Minecraft module, a sudden shove (knockback, fling) is scaled down to a percentage of itself.
@@ -3575,7 +3718,7 @@ end)
 ----------------------------------------------------------------------
 -- gui root
 ----------------------------------------------------------------------
-local Gui = New("ScreenGui", { Name = "ZenithClient", ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 2147483647 }, PG)
+local Gui = New("ScreenGui", { Name = "ZenithClient", Enabled = false, ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 2147483647 }, PG)
 ui.Gui = Gui
 
 -- Two coordinate spaces are in play. "Raw" space is the real screen: UserInputService's mouse,
@@ -3840,8 +3983,11 @@ local ListHolder = New("Frame", { Name = "ArrayList", Size = UDim2.new(1, 0, 0, 
 New("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder }, ListHolder)
 
 local ListEntries = {}
-function ui.Layout()
+function ui.Layout(force)
 	if ui.Splashing then return end
+	local now = os.clock()
+	if not force and now - (ui._lt or 0) < 0.1 then return end
+	ui._lt = now
 	local G = ui.Gui
 	local stack = {}
 	local function cur(c) return stack[c] or (c:find("Bottom") and 8 or 6) end
@@ -3885,7 +4031,7 @@ function ui.ApplyListPos()
 		e.bar.Position = UDim2.fromScale(left and 0 or 1, 0)
 		e.lbl.Position = UDim2.fromOffset(left and 2 or 0, 0)
 	end
-	pcall(ui.Layout)
+	pcall(ui.Layout, true)
 	if ui.RebuildList then ui.RebuildList() end
 end
 Conn(RunService.Heartbeat, function() pcall(ui.Layout) end)
@@ -4473,7 +4619,7 @@ function ui.KeyRow(m, s, parent, order)
 		ui.KeyCancel = function() ui.KeyCapture, ui.KeyCancel = nil, nil; refresh() end
 		ui.KeyCapture = function(key)
 			ui.KeyCancel = nil
-			if key ~= Enum.KeyCode.Escape and key ~= Enum.KeyCode.Unknown then
+			if key ~= Enum.KeyCode.Backspace and key ~= Enum.KeyCode.Unknown then
 				m.Values[s.Name] = key.Name
 				changed(m, s.Name)
 			end
@@ -5307,4 +5453,5 @@ if GuiSettings.Values["Startup Logo"] then
 else
 	ui._stage2 = true
 end
+Gui.Enabled = true
 ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
