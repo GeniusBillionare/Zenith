@@ -1040,9 +1040,8 @@ Module{ Name = "AntiSit", Category = "Player", Desc = "Stops you from sitting in
 
 Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps your fall speed low the whole way down, softens the landing, and cancels the landing hit itself.",
 	Settings = {
-		Mode("Method", { "Soft Land", "Both", "Clamp Speed", "Fling Trick" }, "Soft Land", "Fling Trick copies what Fling does to your speed (huge while the game checks it, your real speed everywhere you can see), which makes velocity based fall damage read nothing. It switches itself off while Fling is on. Soft Land lets you fall normally and only eases your speed down as the ground gets close, so it looks like a regular fall. Clamp Speed never lets you fall faster than Max Fall Speed. Both does both."),
-		Slider("Mask Power", 100, 100000, 100, 1000, "Fling Trick only. How large the speed is that the game sees. Anyone who touches you while it is active gets pushed, so keep it low."),
-		Toggle("Only In Air", false, "Fling Trick only. Applies the trick only while you are falling and for a moment after landing, instead of all the time."),
+		Mode("Method", { "Soft Land", "Both", "Clamp Speed", "Velocity Mask" }, "Soft Land", "Velocity Mask makes your speed read as zero to the game while its scripts run, and gives you back your real speed before anything is drawn or simulated. Velocity based fall damage then sees nothing. It pushes nobody. WARNING: it only protects you while NoFall is on, so turning it off mid-fall can kill you. It switches itself off while Fling is on. Soft Land lets you fall normally and only eases your speed down as the ground gets close. Clamp Speed never lets you fall faster than Max Fall Speed. Both does both."),
+		Toggle("Only In Air", false, "Velocity Mask only. Applies the mask only while you are falling and for a moment after landing, instead of all the time."),
 		Slider("Max Fall Speed", 10, 150, 1, 100, "The fastest you can fall while Clamp Speed is on. Lower it if a game's fall damage still gets you."),
 		Slider("Threshold", 20, 120, 1, 45, "Fall speed where Soft Land starts cancelling your speed near the ground."),
 		Toggle("Landing Reset", true, "The moment the game says you landed, your fall speed is pushed toward zero, without breaking the Spike Limit."),
@@ -1057,31 +1056,36 @@ Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps y
 			return m._fl and m._fl.Enabled
 		end
 		local function active()
-			if m.Values.Method ~= "Fling Trick" or flingOn() then return false end
+			if m.Values.Method ~= "Velocity Mask" or flingOn() then return false end
 			if not m.Values["Only In Air"] then return true end
 			local h, r = Hum(), Root()
 			if h and r and (h:GetState() == Enum.HumanoidStateType.Freefall or r.AssemblyLinearVelocity.Y < -15) then m._until = os.clock() + 0.6 end
 			return os.clock() < m._until
 		end
-		-- the same timing Fling uses: huge speed while the game's scripts run, your real speed back before anything is drawn
+		-- the same timing Fling uses, but the value the game sees is zero, so there is nothing to push anyone with.
+		-- The real speed is back before the next physics step. If another module set a new speed in the meantime,
+		-- that one is left alone.
+		local function restore()
+			local r = Root()
+			if r and m._masked then
+				if r.AssemblyLinearVelocity.Magnitude < 1e-4 then r.AssemblyLinearVelocity = m._mv end
+				m._masked = false
+			end
+		end
 		Hook(m, RunService.Heartbeat, function()
 			local r = Root()
-			if not r or not active() then m._masked = false return end
+			if not r or not active() then return end
 			m._mv = r.AssemblyLinearVelocity
-			local P = m.Values["Mask Power"]
-			r.AssemblyLinearVelocity = m._mv * P + Vector3.new(0, P, 0)
+			if m._mv.Magnitude < 1e-4 then return end
+			r.AssemblyLinearVelocity = Vector3.zero
 			m._masked = true
 		end)
-		Hook(m, RunService.RenderStepped, function()
-			local r = Root(); if r and m._masked then r.AssemblyLinearVelocity = m._mv end
-		end)
-		Hook(m, RunService.Stepped, function()
-			local r = Root(); if r and m._masked then r.AssemblyLinearVelocity = m._mv + Vector3.new(0, 0.1, 0) end
-		end)
+		Hook(m, RunService.RenderStepped, restore)
+		Hook(m, RunService.Stepped, restore)
 	end,
 	OnDisable = function(m)
 		local r0 = Root()
-		if r0 and m._masked and m._mv then r0.AssemblyLinearVelocity = m._mv end
+		if r0 and m._masked and m._mv and r0.AssemblyLinearVelocity.Magnitude < 1e-4 then r0.AssemblyLinearVelocity = m._mv end
 		m._masked = false
 		local h = Hum()
 		if h then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true) end
@@ -1090,7 +1094,7 @@ Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps y
 	OnTick = function(m, dt)
 		local r, h = Root(), Hum(); if not r or not h then return end
 		local V = m.Values
-		if V.Method == "Fling Trick" or (m._fl and m._fl.Enabled) then m._out = nil return end
+		if V.Method == "Velocity Mask" or (m._fl and m._fl.Enabled) then m._out = nil return end
 		if m._hum ~= h then
 			-- a new character: set it up once
 			m._hum = h
