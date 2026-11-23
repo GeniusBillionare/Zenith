@@ -254,7 +254,7 @@ function ui.DrawLogo(parent, height, opts)
 	end
 	-- first choice: paint the logo once into a high resolution image with smooth edges
 	local okImg = pcall(function()
-		local k = math.clamp(math.floor(900 / math.max(FW * s, height)), 1, 5)
+		local k = height <= 48 and 2 or math.clamp(math.floor(900 / math.max(FW * s, height)), 1, 5)
 		local sr = s * k
 		local TW, TH = math.ceil(FW * sr), math.ceil(height * k)
 		local A = table.create(TW * TH, 0)
@@ -331,6 +331,8 @@ function ui.Splash(onDone)
 	logo.Position = UDim2.new(0.5, 0, 0.5, -8)
 	New("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0), Size = UDim2.fromOffset(300, 18), BackgroundTransparency = 1, Font = FONT, TextSize = 13, TextColor3 = C_DIM, Text = "ZENITH CLIENT  " .. VERSION }, cg)
 	-- everything else stays hidden (shrunk to nothing) until the logo shoots outward into it
+	pcall(ui.Layout)
+	ui.Splashing = true
 	local targets = {}
 	for _, f in ipairs({ ui.TopRight, ui.Gui:FindFirstChild("WatermarkHolder") or false, ui.Gui:FindFirstChild("Info") or false, ui.Gui:FindFirstChild("ZenithTabGui") or false }) do
 		if f then
@@ -359,7 +361,7 @@ function ui.Splash(onDone)
 				tw:Play()
 			end)
 		end
-		task.delay(#targets * 0.1 + 1, function() if onDone then onDone() end end)
+		task.delay(#targets * 0.1 + 1, function() ui.Splashing = false; if onDone then onDone() end end)
 	end)
 end
 
@@ -482,6 +484,8 @@ end
 
 local function Slider(name, min, max, step, default, desc) return { Name = name, Type = "Slider", Min = min, Max = max, Step = step, Default = default, Desc = desc } end
 local function Toggle(name, default, desc) return { Name = name, Type = "Toggle", Default = default, Desc = desc } end
+function ui.Key(name, default, desc) return { Name = name, Type = "Key", Default = default, Desc = desc } end
+function ui.Header(name) return { Name = name, Type = "Header" } end
 local function Mode(name, options, default, desc, suffix) return { Name = name, Type = "Mode", Options = options, Default = default, Desc = desc, Suffix = suffix } end
 local function ColorSet(name, default, desc) return { Name = name, Type = "Color", Default = default, Desc = desc } end
 local function Button(name, desc, fn) return { Name = name, Type = "Button", Desc = desc, Fn = fn } end
@@ -539,6 +543,7 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 		Slider("Vertical", 5, 250, 1, 55, "Up and down speed."),
 		Slider("Smoothing", 1, 30, 1, 10, "How quickly you speed up and slow down. Higher is snappier."),
 		Toggle("Face Camera", true, "Turns your character to face where the camera looks."),
+		Toggle("Pitch", true, "Also tilts your character up and down with the camera, so looking down points you down."),
 	},
 	OnEnable = function(m)
 		local r, h = Root(), Hum()
@@ -556,7 +561,11 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 		FlyClear(m)
 		local h, r = Hum(), Root()
 		if h then h.PlatformStand = false end
-		if r then r.AssemblyLinearVelocity = Vector3.zero; r.AssemblyAngularVelocity = Vector3.zero end
+		if r then
+			r.AssemblyLinearVelocity = Vector3.zero; r.AssemblyAngularVelocity = Vector3.zero
+			r.CFrame = CFrame.new(r.Position) * CFrame.fromOrientation(0, m._yaw or 0, 0)
+		end
+		m._rot, m._aimY = nil, nil
 	end,
 	OnTick = function(m, dt)
 		local h, r = Hum(), Root(); if not h or not r then return end
@@ -585,7 +594,11 @@ Module{ Name = "Fly", Category = "Movement", Desc = "Fly around with WASD, Space
 		-- keep upright, face the camera (or the way you move)
 		local flat = V["Face Camera"] and Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z) or Vector3.new(dir.X, 0, dir.Z)
 		if flat.Magnitude > 0.05 then m._yaw = math.atan2(-flat.X, -flat.Z) end
-		local rot = CFrame.fromOrientation(0, m._yaw, 0)
+		local aim = V["Face Camera"] and cf.LookVector or dir
+		if aim.Magnitude > 0.05 then m._aimY = aim.Unit.Y end
+		local goal = CFrame.fromOrientation(V.Pitch and math.asin(math.clamp(m._aimY or 0, -0.97, 0.97)) or 0, m._yaw, 0)
+		m._rot = m._rot and m._rot:Lerp(goal, 1 - math.exp(-14 * dt)) or goal
+		local rot = m._rot
 
 		if V.Mode == "CFrame" then
 			m._ao.Enabled = false
@@ -809,14 +822,28 @@ function ui.SwimPose(m, h, r, tgt)
 	if other and other.IsPlaying then other:Stop(0.2) end
 	if want and not want.IsPlaying then want:Play(0.2) end
 	h.AutoRotate = false
-	if moving then
-		local yaw
-		if Vector3.new(tgt.X, 0, tgt.Z).Magnitude > 0.5 then yaw = math.atan2(-tgt.X, -tgt.Z)
-		else local lv = r.CFrame.LookVector; yaw = math.atan2(-lv.X, -lv.Z) end
-		local pitch = math.asin(math.clamp(tgt.Unit.Y, -1, 1)) * 0.6
-		r.CFrame = CFrame.new(r.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
-		r.AssemblyAngularVelocity = Vector3.zero
+	local now = os.clock()
+	local dt = math.min(now - (st.t or now), 0.1)
+	st.t = now
+	local dirv = (m._v and m._v.Magnitude > 2) and m._v or tgt
+	local flat = Vector3.new(dirv.X, 0, dirv.Z)
+	if flat.Magnitude > 0.5 then st.head = flat.Unit
+	elseif not st.head then local lv = r.CFrame.LookVector; st.head = Vector3.new(lv.X, 0, lv.Z).Unit end
+	local goal
+	if moving and dirv.Magnitude > 0.5 then
+		-- lie flat in the direction of travel: head leads, chest faces down
+		local d = dirv.Unit
+		local look
+		if math.abs(d.Y) > 0.995 then look = st.head * (d.Y > 0 and 1 or -1)
+		else look = (Vector3.new(0, -1, 0) - d * (-d.Y)).Unit end
+		local back = -look
+		goal = CFrame.fromMatrix(Vector3.zero, d:Cross(back), d, back)
+	else
+		goal = CFrame.Angles(0, math.atan2(-st.head.X, -st.head.Z), 0)
 	end
+	st.cf = st.cf and st.cf:Lerp(goal, 1 - math.exp(-dt * 9)) or r.CFrame.Rotation
+	r.CFrame = CFrame.new(r.Position) * st.cf
+	r.AssemblyAngularVelocity = Vector3.zero
 end
 function ui.SwimPoseOff(m)
 	local st = m._sw
@@ -1003,68 +1030,68 @@ Module{ Name = "AntiSit", Category = "Player", Desc = "Stops you from sitting in
 
 Module{ Name = "NoFall", Category = "Player", Desc = "Stops fall damage. Keeps your fall speed low the whole way down, softens the landing, and cancels the landing hit itself.",
 	Settings = {
-		Mode("Method", { "Both", "Clamp Speed", "Soft Land" }, "Both", "Clamp Speed never lets you fall faster than Max Fall Speed. Soft Land only cancels your speed just before the ground. Both does both."),
-		Slider("Max Fall Speed", 10, 120, 1, 30, "The fastest you can fall while Clamp Speed is on. Lower it if a game's fall damage still gets you."),
+		Mode("Method", { "Soft Land", "Both", "Clamp Speed" }, "Soft Land", "Soft Land lets you fall normally and only eases your speed down as the ground gets close, so it looks like a regular fall. Clamp Speed never lets you fall faster than Max Fall Speed. Both does both."),
+		Slider("Max Fall Speed", 10, 150, 1, 100, "The fastest you can fall while Clamp Speed is on. Lower it if a game's fall damage still gets you."),
 		Slider("Threshold", 20, 120, 1, 45, "Fall speed where Soft Land starts cancelling your speed near the ground."),
-		Toggle("Landing Reset", true, "The moment the game says you landed, your fall speed is set to zero so scripts reading it see nothing."),
+		Toggle("Landing Reset", true, "The moment the game says you landed, your fall speed is pushed toward zero, without breaking the Spike Limit."),
 		Toggle("No Ragdoll", true, "Stops the humanoid from tripping or ragdolling after a hard landing."),
-		Toggle("Spike Guard", true, "Watches for the same signs fall-damage scripts look for: very high speed and speed that changes suddenly. When your speed jumps by more than the limit in one frame, it is flattened and held near zero for a moment."),
-		Slider("Spike Limit", 20, 250, 5, 60, "How much your speed may change in a single frame before Spike Guard steps in."),
+		Toggle("Spike Guard", true, "Fall-damage scripts look for speed that changes too fast, up or down. With this on, your speed is never allowed to change by more than the Spike Limit in one frame. Bigger changes, like stopping on landing, are spread over a few frames."),
+		Slider("Spike Limit", 20, 250, 5, 40, "The most your speed may change in a single frame. Lower is safer against strict games, but slows how fast you can stop."),
 	},
-	OnEnable = function(m) m._hum = nil; m._last = nil; m._grace = 0 end,
+	OnEnable = function(m) m._hum = nil; m._out = nil end,
 	OnDisable = function(m)
 		local h = Hum()
 		if h then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true) end
 		m._hum = nil
 	end,
-	OnTick = function(m)
+	OnTick = function(m, dt)
 		local r, h = Root(), Hum(); if not r or not h then return end
 		local V = m.Values
 		if m._hum ~= h then
 			-- a new character: set it up once
 			m._hum = h
+			m._out = nil
 			if V["No Ragdoll"] then h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false) end
 			Hook(m, h.StateChanged, function(old, new)
 				if V["Landing Reset"] and (new == Enum.HumanoidStateType.Landed or (old == Enum.HumanoidStateType.Freefall and new == Enum.HumanoidStateType.Running)) then
 					local rr = Root()
 					if rr then
 						local v = rr.AssemblyLinearVelocity
-						rr.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+						-- toward zero, but never faster than the spike limit allows
+						if v.Y < 0 then rr.AssemblyLinearVelocity = Vector3.new(v.X, math.min(0, v.Y + V["Spike Limit"]), v.Z) end
 					end
 				end
 			end)
 		end
 		local v = r.AssemblyLinearVelocity
-		if V["Spike Guard"] then
-			local last = m._last
-			m._last = v
-			local now = os.clock()
-			if last and last.Y < -V.Threshold and (v - last).Magnitude > V["Spike Limit"] then
-				m._grace = now + 0.3
-			end
-			if now < (m._grace or 0) then
-				v = Vector3.new(v.X, math.max(v.Y, -2), v.Z)
-				if v.Y > 5 then v = Vector3.new(v.X, 5, v.Z) end
-				r.AssemblyLinearVelocity = v
-				return
-			end
-			if math.abs(v.Y) > V["Max Fall Speed"] * 3 and v.Y > 0 then
-				-- huge upward spikes right after a fall are collisions being resolved
-				if last and last.Y < -V.Threshold then r.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z); return end
-			end
-		end
+		local want = v
 		local mode = V.Method
 		if (mode == "Both" or mode == "Clamp Speed") and v.Y < -V["Max Fall Speed"] then
-			v = Vector3.new(v.X, -V["Max Fall Speed"], v.Z)
-			r.AssemblyLinearVelocity = v
+			want = Vector3.new(v.X, -V["Max Fall Speed"], v.Z)
 		end
 		if mode == "Both" or mode == "Soft Land" then
-			-- the faster you fall, the earlier the ground has to be noticed
-			local reach = math.max(14, -v.Y * 0.3)
-			if v.Y < -V.Threshold and workspace:Raycast(r.Position, Vector3.new(0, -reach, 0), RayParams()) then
-				r.AssemblyLinearVelocity = Vector3.new(v.X, -4, v.Z)
+			-- the faster you fall, the earlier braking has to start, because the slowdown is spread over several frames
+			-- the fall is left alone until the ground is close, then your speed is eased down in proportion to how far
+			-- off the ground is, so it looks like a normal landing
+			local reach = -v.Y / 3 + 6
+			if v.Y < -V.Threshold then
+				local hit = workspace:Raycast(r.Position, Vector3.new(0, -reach, 0), RayParams())
+				if hit then
+					local cap = -math.max(5, (hit.Distance - 3) * 3)
+					if cap > want.Y then want = Vector3.new(want.X, cap, want.Z) end
+				end
 			end
 		end
+		-- fall damage scripts watch for speed that changes too fast, in either direction, so no frame is allowed to
+		-- change your speed by more than the limit; bigger changes are spread over the next frames
+		local last = m._out
+		if last and V["Spike Guard"] then
+			local lim = V["Spike Limit"] * math.max((dt or 0) * 60, 1)
+			local d = want - last
+			if d.Magnitude > lim then want = last + d.Unit * lim end
+		end
+		if want ~= v then r.AssemblyLinearVelocity = want end
+		m._out = want
 	end }
 
 Module{ Name = "AntiVoid", Category = "Player", Desc = "If you fall below the void height, teleports you back to the last solid ground you stood on.",
@@ -1393,13 +1420,15 @@ Module{ Name = "TabGUI", Category = "Render", Desc = "A small menu under the Rob
 		local function curMods() return ByCat[Categories[m._ci]] or {} end
 		local function curSets()
 			local mod = curMods()[m._mi]
-			return mod and mod.Settings or {}
+			local list = {}
+			for _, st in ipairs(mod and mod.Settings or {}) do if st.Type ~= "Header" then list[#list + 1] = st end end
+			return list
 		end
 		local function valText(mod, st)
 			local v = mod.Values[st.Name]
 			if st.Type == "Toggle" then return v and "on" or "off" end
 			if st.Type == "Slider" then return tostring(math.floor(v * 100 + 0.5) / 100) end
-			if st.Type == "Mode" then return tostring(v) end
+			if st.Type == "Mode" or st.Type == "Key" then return tostring(v) end
 			if st.Type == "Button" then return "run" end
 			return ""
 		end
@@ -1664,7 +1693,7 @@ local FOVm = Module{ Name = "FOV", Category = "Render", Desc = "Changes your cam
 
 Zoom = Module{ Name = "Zoom", Category = "Render", Desc = "Hold a key (or the ZOOM button on mobile) to zoom the camera in smoothly, release it to zoom back out.",
 	Settings = {
-		Mode("Key", { "C", "Z", "X", "V" }, "C", "The key you hold to zoom."),
+		ui.Key("Key", "C", "The key you hold to zoom."),
 		Slider("Zoom FOV", 10, 60, 1, 20, "Field of view while zoomed. Lower numbers zoom in more."),
 	},
 	OnEnable = function(m) if UIS.TouchEnabled then m._tz = ui.TouchBtn("ZOOM", 3) end end,
@@ -1721,13 +1750,17 @@ end
 local HUDm
 HUDm = Module{ Name = "HUD", Category = "Render", Desc = "Shows the Zenith title above the array list and FPS, ping and coordinates in the bottom left.",
 	Settings = {
+		ui.Header("Title"),
 		Toggle("Watermark", true, "Shows the Zenith title above the array list."),
+		ui.Header("Info Box"),
+		Mode("Info Position", { "Bottom Left", "Bottom Right", "Top Left", "Top Right" }, "Bottom Left", "Which corner the FPS, ping and coordinates box sits in."),
 		Toggle("FPS", true, "Shows your frames per second in the bottom left."),
 		Toggle("Ping", true, "Shows your ping in the bottom left."),
 		Toggle("Coords", true, "Shows your X, Y and Z position in the bottom left."),
 		Toggle("Speed", true, "Shows how fast your character is moving, in studs per second."),
 		Toggle("Real Speed", true, "Shows your real speed from how far you actually moved each frame, so teleports and CFrame movement count too."),
 		Slider("Text Size", 11, 24, 1, 14, "Size of the bottom left text."),
+		ui.Header("Colors"),
 		Toggle("Theme Accent", true, "Uses your theme color for the title and info bar. Picking a Watermark Color turns this off."),
 		ColorSet("Watermark Color", Color3.fromRGB(160, 90, 255), "Color of the title and info bar. Only used when Theme Accent is off."),
 		ColorSet("Text Color", Color3.new(1, 1, 1), "Color of the FPS, ping and coordinates text."),
@@ -2567,19 +2600,6 @@ function ui.PL.Actions(u)
 				PL.flinging = false
 			end)
 		end)
-		add("Invisible Fling", function()
-			if PL.flinging or ui.IF.st then return end
-			local tr0 = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-			if not tr0 then ui.Notify("They have no character right now", false) return end
-			if not ui.IFStart() then ui.Notify("You need a living character", false) return end
-			PL.flinging = true
-			local t0 = os.clock()
-			local c = Conn(RunService.Heartbeat, function()
-				local t = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-				if t and os.clock() - t0 < 2.5 then ui.IFAt(t, 20000) end
-			end)
-			task.delay(2.6, function() c:Disconnect(); ui.IFStop(); PL.flinging = false end)
-		end)
 	end
 	add("Copy Username", function() ui.PL.Copy(u.name, "Username") end)
 	add("Copy User ID", function() ui.PL.Copy(tostring(u.id), "User ID") end)
@@ -2995,10 +3015,12 @@ function ui.TK.MakeTool(m)
 end
 Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekinesis tool. Equip it, hold click on a loose part to lift just that part and move it with your cursor. Anchored parts are looked through. Scroll, or use the push and pull keys, to change its distance. The throw key launches it and lets go.",
 	Settings = {
+		ui.Header("Keys"),
 		Toggle("Use Keys", true, "Turns the push, pull and throw keys on or off. Turn it off if they clash with your keybinds. The phone buttons still work."),
-		Mode("Push Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "E", "Hold to push the held object farther away."),
-		Mode("Pull Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "Q", "Hold to pull the held object closer."),
-		Mode("Throw Key", { "E", "R", "T", "Y", "U", "I", "O", "P", "F", "G", "H", "J", "K", "L", "Z", "X", "C", "V", "B", "N", "M", "Q" }, "F", "Launches the held object where you are looking and lets go of it."),
+		ui.Key("Push Key", "E", "Hold to push the held object farther away."),
+		ui.Key("Pull Key", "Q", "Hold to pull the held object closer."),
+		ui.Key("Throw Key", "F", "Launches the held object where you are looking and lets go of it."),
+		ui.Header("Grabbing"),
 		Slider("Reach", 30, 1000, 10, 200, "How far away you can grab something."),
 		Slider("Move Speed", 5, 200, 1, 50, "How fast the push and pull keys move the object."),
 		Slider("Throw Power", 50, 2000, 10, 300, "How fast the object is launched when you throw it."),
@@ -3045,98 +3067,68 @@ Module{ Name = "Telekinesis", Category = "Utility", Desc = "Gives you a Telekine
 		for _, hl in ipairs(g.hls) do hl.FillColor, hl.OutlineColor = Accent(), Accent() end
 	end }
 
--- Invisible Fling: the HumanoidRootPart is invisible by default and is the part that collides. It is split off from your
--- body, your visible body parts are held still, and only the root part is sent into players.
-ui.IF = {}
-function ui.IFStart()
-	if ui.IF.st then return true end
-	local c, r, h = LP.Character, Root(), Hum()
-	if not (c and r and h) then return false end
-	local st = { home = r.CFrame, joints = {}, body = {}, cam = Camera.CameraSubject, ps = h.PlatformStand }
-	for _, j in ipairs(r:GetJoints()) do
-		if j:IsA("JointInstance") then
-			pcall(function() j.Enabled = false end)
-			st.joints[#st.joints + 1] = j
-		end
-	end
-	for _, d in ipairs(c:GetDescendants()) do
-		if d:IsA("BasePart") and d ~= r and not d.Anchored then
-			d.Anchored = true
-			st.body[#st.body + 1] = d
-		end
-	end
-	h.PlatformStand = true
-	local head = c:FindFirstChild("Head")
-	if head then Camera.CameraSubject = head end
-	ui.IF.st = st
-	return true
-end
-function ui.IFAt(tr, power)
-	local r = Root()
-	if not ui.IF.st or not r then return end
-	r.CFrame = tr.CFrame
-	local d = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)
-	r.AssemblyLinearVelocity = (d.Magnitude > 0.01 and d.Unit or Vector3.yAxis) * power
-	r.AssemblyAngularVelocity = Vector3.new(power, power, power)
-end
-function ui.IFHome()
-	local r, st = Root(), ui.IF.st
-	if not r or not st then return end
-	r.CFrame = st.home
-	r.AssemblyLinearVelocity = Vector3.zero
-	r.AssemblyAngularVelocity = Vector3.zero
-end
-function ui.IFStop()
-	local st = ui.IF.st
-	if not st then return end
-	ui.IF.st = nil
-	for _, j in ipairs(st.joints) do pcall(function() j.Enabled = true end) end
-	for _, p in ipairs(st.body) do pcall(function() p.Anchored = false end) end
-	local r, h = Root(), Hum()
-	if r then
-		r.CFrame = st.home
-		r.AssemblyLinearVelocity = Vector3.zero
-		r.AssemblyAngularVelocity = Vector3.zero
-	end
-	if h then
-		h.PlatformStand = st.ps
-		Camera.CameraSubject = h
-	end
-end
-Module{ Name = "InvisibleFling", Category = "Player", Desc = "Flings players using only your invisible HumanoidRootPart. Your visible body stays where it is while the root part is sent into the nearest player in range. Turn it off to put everything back together.",
+Module{ Name = "FakeLag", Category = "Player", Desc = "Holds your outgoing data for a set delay, then sends it all at once, over and over. Other players see you stutter and jump forward.",
 	Settings = {
-		Slider("Range", 10, 300, 5, 80, "How far from your body a player can be and still get targeted."),
-		Slider("Power", 1000, 100000, 1000, 10000, "How hard players are launched."),
-		Toggle("Team Check", true, D_TEAM),
+		Slider("Delay", 50, 2000, 10, 300, "How long, in milliseconds, your data is held back before it is sent."),
+		Slider("Release", 20, 300, 10, 60, "How long, in milliseconds, the held data is let through each time."),
+		Mode("Method", { "Auto", "Bandwidth", "Sender Rate" }, "Auto", "Bandwidth cuts your outgoing data. Sender Rate slows how often your position is sent. Auto uses both."),
 	},
 	OnEnable = function(m)
-		if not ui.IFStart() then
-			ui.Notify("Invisible Fling needs a living character", false)
+		m._ok = pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
+		if not m._ok and type(setfflag) ~= "function" then
+			ui.Notify("Your executor can't hold outgoing network data, so FakeLag can't work", false)
 			task.defer(function() SetEnabled(m, false, true) end)
 			return
 		end
-		Hook(m, LP.CharacterAdded, function()
-			ui.IF.st = nil
-			task.wait(0.7)
-			if m.Enabled then ui.IFStart() end
-		end)
+		m._t, m._hold = os.clock(), true
 	end,
-	OnDisable = function(m) ui.IFStop() end,
 	OnTick = function(m)
-		local st, h = ui.IF.st, Hum()
-		if not st then return end
-		if not h or h.Health <= 0 then ui.IFStop() return end
 		local V = m.Values
-		local best, bd = nil, V.Range
-		for _, p in ipairs(Players:GetPlayers()) do
-			local tr = p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-			local th = tr and p.Character:FindFirstChildOfClass("Humanoid")
-			if tr and th and th.Health > 0 and not (V["Team Check"] and ui.SameTeam(p)) then
-				local d = (tr.Position - st.home.Position).Magnitude
-				if d < bd then best, bd = tr, d end
+		local now = os.clock()
+		local wait = (m._hold and V.Delay or V.Release) / 1000
+		if now - m._t >= wait then m._hold = not m._hold; m._t = now end
+		local kb, rate = m._hold and 1 or 100000, m._hold and "1" or "15"
+		if V.Method ~= "Sender Rate" then pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(kb) end) end
+		if V.Method ~= "Bandwidth" and type(setfflag) == "function" then pcall(function() setfflag("S2PhysicsSenderRate", rate) end) end
+	end,
+	OnDisable = function(m)
+		pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(100000) end)
+		if type(setfflag) == "function" then pcall(function() setfflag("S2PhysicsSenderRate", "15") end) end
+	end }
+
+-- Velocity: like the Minecraft module, a sudden shove (knockback, fling) is scaled down to a percentage of itself.
+Module{ Name = "Velocity", Category = "Player", Desc = "Anti knockback. When something suddenly shoves you, only a percentage of that push is kept. 0% ignores it completely.",
+	Settings = {
+		Slider("Horizontal", 0, 100, 1, 0, "Percent of sideways knockback you keep."),
+		Slider("Vertical", 0, 100, 1, 0, "Percent of upward knockback you keep."),
+		Slider("Chance", 0, 100, 1, 100, "Chance, in percent, that a push is reduced. Lower looks more legit."),
+		Slider("Sensitivity", 10, 200, 5, 35, "How big a sudden change in speed has to be, in studs per second, to count as knockback. Lower catches weaker pushes but may react to normal movement."),
+	},
+	OnEnable = function(m)
+		m._last, m._ig = nil, 0
+		Hook(m, UIS.JumpRequest, function() m._ig = os.clock() end)
+	end,
+	OnTick = function(m)
+		local r, h = Root(), Hum()
+		if not r or not h or h.Health <= 0 then m._last = nil return end
+		local V = m.Values
+		local v, last = r.AssemblyLinearVelocity, m._last
+		if last then
+			local d = v - last
+			local dh = Vector3.new(d.X, 0, d.Z)
+			local jumping = h.Jump or os.clock() - m._ig < 0.3
+			local hHit = dh.Magnitude > V.Sensitivity
+			local vHit = d.Y > V.Sensitivity and v.Y > 8 and not jumping
+			if (hHit or vHit) and math.random() * 100 <= V.Chance then
+				local hf, vf = V.Horizontal / 100, V.Vertical / 100
+				local nx, ny, nz = v.X, v.Y, v.Z
+				if hHit then nx, nz = last.X + dh.X * hf, last.Z + dh.Z * hf end
+				if vHit then ny = last.Y + d.Y * vf end
+				r.AssemblyLinearVelocity = Vector3.new(nx, ny, nz)
+				r.AssemblyAngularVelocity = r.AssemblyAngularVelocity * math.max(hf, vf)
 			end
 		end
-		if best then ui.IFAt(best, V.Power) else ui.IFHome() end
+		m._last = r.AssemblyLinearVelocity
 	end }
 
 -- PartBlast: every loose part around you is flung away from you, automatically
@@ -3304,13 +3296,15 @@ Module{ Name = "Freefall", Category = "Player", Desc = "Plays your falling anima
 ----------------------------------------------------------------------
 local ArrayList = Module{ Name = "ArrayList", Category = "Settings", Desc = "Lists your enabled modules on the right side of the screen, starting at the top.",
 	Settings = {
+		ui.Header("Layout"),
+		Mode("Position", { "Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle" }, "Top Right", "Where the array list sits on your screen. Middle puts it a bit right of the center of the screen, halfway down. The title stays in the top right."),
 		Mode("Sort", { "Longest", "Shortest", "Alphabetical" }, "Longest", "Order of the list: longest names first, shortest first, or alphabetical."),
 		Toggle("Show Suffix", true, "Shows a module's current mode next to its name, for example Speed WalkSpeed."),
+		ui.Header("Style"),
 		Toggle("Background", true, "Draws a dark box behind each entry."),
 		Toggle("Side Bar", true, "Draws a colored bar on the right edge of each entry."),
 		Slider("Opacity", 0, 1, 0.05, 0.45, "How solid the background boxes are."),
 		Slider("Text Size", 12, 26, 1, 16, "Size of the list text in pixels."),
-		Mode("Position", { "Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle" }, "Top Right", "Where the array list sits on your screen. Middle puts it a bit right of the center of the screen, halfway down. The title stays in the top right."),
 	},
 	OnChanged = function(m, name) if name == "Position" and ui.ApplyListPos then ui.ApplyListPos() end end }
 local Notifs = Module{ Name = "Notifications", Category = "Settings", Desc = "Shows small pop-ups in the bottom right for warnings, teleports and other events.",
@@ -3329,18 +3323,23 @@ Module{ Name = "Theme", Category = "Settings", Desc = "Sets the accent color of 
 	end }
 local GuiSettings = Module{ Name = "GUI", Category = "Settings", Desc = "Controls how this menu opens and what it looks like.", Passive = true,
 	Settings = {
+		ui.Header("Menu"),
 		Slider("UI Scale", 0.5, 1.5, 0.05, ui.Phone and 0.75 or 1, "Makes the whole menu bigger or smaller. Lower it if the menu is too large for your screen."),
 		Mode("UI Type", { "Click GUI", "Window" }, "Click GUI", "Click GUI shows every category as its own panel. Window shows one box with the categories on the left and the selected category on the right."),
-		Mode("Menu Key", { "RightShift", "Insert", "RightControl", "RightAlt", "Delete", "Home" }, "RightShift", "The key that opens and closes this menu."),
+		ui.Key("Menu Key", "RightShift", "The key that opens and closes this menu."),
+		Toggle("Startup Logo", true, "Shows the Zenith logo for a moment when the client loads."),
+		ui.Header("Look"),
 		Toggle("Background Blur", true, "Blurs the game behind the menu while it is open."),
 		Toggle("Background Dim", true, "Darkens the game behind the menu while it is open."),
+		ui.Header("Help"),
 		Toggle("Descriptions", true, "Shows a short description of whatever you hover over. Turn off to hide them completely."),
 		Mode("Description Style", { "Cursor", "Bottom Bar" }, ui.Phone and "Bottom Bar" or "Cursor", "Cursor shows a small tip next to your mouse. Bottom Bar pins it to the bottom of the screen."),
-		Toggle("High Slider Values", false, "Raises the maximum of speed, distance and size sliders far beyond their normal limits."),
-		Toggle("Keep Across Teleports", false, "Reloads Zenith with your current settings after a rejoin or teleport. Needs this script saved as Zenith.luau in your executor workspace."),
+		ui.Header("Controls"),
 		Toggle("Ctrl To Lower", true, "Left Ctrl lowers you in Fly, VehicleFly, AirWalk and Jesus. Turn off if Ctrl gets in the way."),
 		Toggle("Shift To Descend", true, "Left Shift makes you descend in Fly and VehicleFly. Turn off if Shift gets in the way."),
-		Toggle("Startup Logo", true, "Shows the Zenith logo for a moment when the client loads."),
+		ui.Header("Advanced"),
+		Toggle("High Slider Values", false, "Raises the maximum of speed, distance and size sliders far beyond their normal limits."),
+		Toggle("Keep Across Teleports", false, "Reloads Zenith with your current settings after a rejoin or teleport. Needs this script saved as Zenith.luau in your executor workspace."),
 	},
 	OnChanged = function(m, name)
 		if name == "High Slider Values" and ui.OnHighChanged then ui.OnHighChanged() end
@@ -3366,6 +3365,16 @@ Module{ Name = "Panic", Category = "Settings", Desc = "Instantly turns off every
 		for _, m in ipairs(Modules) do if m.Enabled and m.Category ~= "Settings" then SetEnabled(m, false, true) end end
 		ui.RebuildList(); ui.Notify("All modules disabled", false)
 	end }
+function ui.Reload()
+	pcall(function() if ui.SaveSession then ui.SaveSession() end end)
+	task.spawn(function()
+		ui.Unload()
+		task.wait(4)
+		local ok, err = pcall(function() loadstring(game:HttpGet(ui.SourceUrl))() end)
+		if not ok then warn("[Zenith] reload failed: " .. tostring(err)) end
+	end)
+end
+Module{ Name = "Reload", Category = "Settings", Desc = "Completely removes Zenith, waits a few seconds, then downloads and runs the latest official script again. Your settings carry over.", Action = function() ui.Reload() end }
 Module{ Name = "Unload", Category = "Settings", Desc = "Completely removes Zenith from your game until you run it again.", Action = function() ui.Unload() end }
 
 ----------------------------------------------------------------------
@@ -3377,7 +3386,7 @@ do
 	ui.ConfigFile = FILE
 	ui.SessionFile = "ZenithSession.json"
 	ui.KeepFile = "ZenithKeep.txt"
-	ui.LoaderFile = "Zenith.luau"
+	ui.SourceUrl = "https://raw.githubusercontent.com/GeniusBillionare/Zenith/refs/heads/main/src/main.luau"
 	ui.CanFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
 	ui.SliderRows = {}
 
@@ -3456,6 +3465,8 @@ do
 								m.Values[st.Name] = v
 							elseif st.Type == "Mode" and type(v) == "string" then
 								if type(st.Options) == "function" or table.find(st.Options, v) then m.Values[st.Name] = v end
+							elseif st.Type == "Key" and type(v) == "string" and pcall(function() return Enum.KeyCode[v] end) then
+								m.Values[st.Name] = v
 							elseif st.Type == "Text" and type(v) == "string" then
 								m.Values[st.Name] = v
 							elseif st.Type == "Color" and typeof(v) == "Color3" then
@@ -3489,7 +3500,7 @@ do
 
 	-- Keep Across Teleports: queue_on_teleport only runs after a teleport / rejoin from this game, never on a
 	-- normal join, and the queued code does nothing unless the keep flag file still says "1".
-	local PAYLOAD = 'if isfile("ZenithKeep.txt") and readfile("ZenithKeep.txt") == "1" and isfile("Zenith.luau") then loadstring(readfile("Zenith.luau"))() end'
+	local PAYLOAD = 'if isfile("ZenithKeep.txt") and readfile("ZenithKeep.txt") == "1" then loadstring(game:HttpGet("' .. ui.SourceUrl .. '"))() end'
 	function ui.QueuePersist()
 		if ui._queued then return end
 		if type(queue_on_teleport) ~= "function" then
@@ -3506,10 +3517,6 @@ do
 		end
 		pcall(writefile, ui.KeepFile, on and "1" or "0")
 		if on then
-			local okF, has = pcall(isfile, ui.LoaderFile)
-			if not (okF and has) then
-				ui.Notify("Save this script as Zenith.luau in your executor's workspace folder first", false)
-			end
 			ui.QueuePersist()
 		end
 	end
@@ -3732,9 +3739,10 @@ Module{ Name = "TargetHUD", Category = "Render", Desc = "Shows a small info card
 		c.stroke.Color = col
 		local vp = ui.Gui.AbsoluteSize
 		local cw, ch2 = 188, 52
-		local px = x2 + 10
-		if px + cw > vp.X - 4 then px = x1 - cw - 10 end
-		c.card.Position = UDim2.fromOffset(math.clamp(px, 4, vp.X - cw - 4), math.clamp(y1, 4, vp.Y - ch2 - 4))
+		local px, py = mp.X + 18, mp.Y + 18
+		if px + cw > vp.X - 4 then px = mp.X - cw - 14 end
+		if py + ch2 > vp.Y - 4 then py = mp.Y - ch2 - 14 end
+		c.card.Position = UDim2.fromOffset(math.clamp(px, 4, math.max(4, vp.X - cw - 4)), math.clamp(py, 4, math.max(4, vp.Y - ch2 - 4)))
 		c.card.Visible = true
 	end }
 
@@ -3832,22 +3840,43 @@ local ListHolder = New("Frame", { Name = "ArrayList", Size = UDim2.new(1, 0, 0, 
 New("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder }, ListHolder)
 
 local ListEntries = {}
+function ui.Layout()
+	if ui.Splashing then return end
+	local G = ui.Gui
+	local stack = {}
+	local function cur(c) return stack[c] or (c:find("Bottom") and 8 or 6) end
+	local function place(f, c, mx)
+		local left, bottom = c:find("Left") ~= nil, c:find("Bottom") ~= nil
+		local y = cur(c)
+		f.AnchorPoint = Vector2.new(left and 0 or 1, bottom and 1 or 0)
+		f.Position = UDim2.new(left and 0 or 1, left and mx or -mx, bottom and 1 or 0, bottom and -y or y)
+		return y
+	end
+	local wmh = G:FindFirstChild("WatermarkHolder")
+	local wm = wmh and wmh:FindFirstChild("Watermark")
+	if wm and wm.Visible then stack["Top Right"] = 6 + wm.AbsoluteSize.Y end
+	local tg = G:FindFirstChild("ZenithTabGui")
+	if tg and tg.Visible then stack["Top Left"] = tg.Position.Y.Offset + tg.AbsoluteSize.Y + 4 end
+	local inf = G:FindFirstChild("Info")
+	if inf and inf.Visible then
+		local c = HUDm.Values["Info Position"] or "Bottom Left"
+		local y = place(inf, c, 8)
+		stack[c] = y + inf.AbsoluteSize.Y + 4
+	end
+	local pos = ui.ListPos or "Top Right"
+	if pos == "Middle" then
+		TopRight.AnchorPoint = Vector2.new(0, 0.5)
+		TopRight.Position = UDim2.fromScale(0.6, 0.5)
+	else
+		place(TopRight, pos, 6)
+	end
+end
 function ui.ApplyListPos()
 	local pos = ArrayList.Values.Position or "Top Right"
 	if pos == "Right Middle" or pos == "Left Middle" then pos = "Middle" end
-	local mid = pos == "Middle"
-	local left = mid or pos:find("Left") ~= nil
-	local ax, ay, px, py
-	if mid then ax, ay, px, py = 0, 0.5, UDim.new(0.6, 0), 0
-	else
-		ax = left and 0 or 1
-		ay = pos:find("Bottom") and 1 or 0
-		px = UDim.new(ax, left and 6 or -6)
-		py = pos:find("Bottom") and -6 or (pos == "Top Right" and 40 or 6)
-	end
+	ui.ListPos = pos
+	local left = pos == "Middle" or pos:find("Left") ~= nil
 	ui.ListLeft = left
-	TopRight.AnchorPoint = Vector2.new(ax, ay)
-	TopRight.Position = UDim2.new(px.Scale, px.Offset, ay, py)
 	local ha = left and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Right
 	TopRight:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = ha
 	ListHolder:FindFirstChildOfClass("UIListLayout").HorizontalAlignment = ha
@@ -3856,8 +3885,10 @@ function ui.ApplyListPos()
 		e.bar.Position = UDim2.fromScale(left and 0 or 1, 0)
 		e.lbl.Position = UDim2.fromOffset(left and 2 or 0, 0)
 	end
+	pcall(ui.Layout)
 	if ui.RebuildList then ui.RebuildList() end
 end
+Conn(RunService.Heartbeat, function() pcall(ui.Layout) end)
 local TWEEN_IN = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local TWEEN_OUT = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 
@@ -4426,6 +4457,38 @@ local function BindRow(m, parent, order)
 	return row
 end
 
+-- key setting: click it, press a key, done (Escape cancels)
+function ui.KeyRow(m, s, parent, order)
+	local row = SettingButton(parent, order)
+	SettingLabel(row, s.Name)
+	local valL = RightLabel(row)
+	Reg(valL, "TextColor3")
+	local function refresh() valL.Text = "[" .. tostring(m.Values[s.Name]) .. "]" end
+	refresh()
+	AddPainter(valL, refresh)
+	row.MouseButton1Click:Connect(function()
+		if ui.KeyCancel then ui.KeyCancel() end
+		if Listening then Repaint(Listening.m); Listening = nil end
+		valL.Text = "[ press a key ]"
+		ui.KeyCancel = function() ui.KeyCapture, ui.KeyCancel = nil, nil; refresh() end
+		ui.KeyCapture = function(key)
+			ui.KeyCancel = nil
+			if key ~= Enum.KeyCode.Escape and key ~= Enum.KeyCode.Unknown then
+				m.Values[s.Name] = key.Name
+				changed(m, s.Name)
+			end
+			refresh()
+		end
+	end)
+	return row
+end
+function ui.HeaderRow(m, s, parent, order)
+	local row = New("Frame", { Size = UDim2.new(1, 0, 0, SETH), BackgroundTransparency = 1, LayoutOrder = order }, parent)
+	New("TextLabel", { Position = UDim2.fromOffset(10, 5), Size = UDim2.new(1, -20, 1, -5), BackgroundTransparency = 1, Font = FONT_B, TextSize = 10, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Left, Text = string.upper(s.Name) }, row)
+	New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -1), Size = UDim2.new(1, -20, 0, 1), BackgroundColor3 = Color3.fromRGB(58, 58, 76), BorderSizePixel = 0 }, row)
+	return row
+end
+
 ----------------------------------------------------------------------
 -- module row (used in panels and in search results)
 ----------------------------------------------------------------------
@@ -4479,8 +4542,10 @@ local function BuildModuleRow(m, parent, showCat, idx, zref)
 		elseif s.Type == "Color" then row = ColorRow(m, s, setFrame, rows)
 		elseif s.Type == "Button" then row = ButtonRow(m, s, setFrame, rows)
 		elseif s.Type == "Text" then row = ui.TextRow(m, s, setFrame, rows)
+		elseif s.Type == "Key" then row = ui.KeyRow(m, s, setFrame, rows)
+		elseif s.Type == "Header" then row = ui.HeaderRow(m, s, setFrame, rows)
 		else row = ToggleRow(m, s, setFrame, rows) end
-		ui.AddHover(row, function() return ui.HoverText(m.Name .. ": " .. s.Name, s.Desc) end, zref)
+		if s.Type ~= "Header" then ui.AddHover(row, function() return ui.HoverText(m.Name .. ": " .. s.Name, s.Desc) end, zref) end
 	end
 	if not m.Passive then
 		rows += 1
@@ -5126,6 +5191,12 @@ ui.SetMenu = SetMenu
 ----------------------------------------------------------------------
 -- true when a keybind row was waiting for a key and this key was given to it
 function ui.TryBind(key)
+	if ui.KeyCapture then
+		local cb = ui.KeyCapture
+		ui.KeyCapture = nil
+		cb(key)
+		return true
+	end
 	if not Listening then return false end
 	local m = Listening.m; Listening = nil
 	if key == Enum.KeyCode.Escape or key == Enum.KeyCode.Backspace then m.Bind = nil else m.Bind = key end
@@ -5146,19 +5217,24 @@ Conn(UIS.InputBegan, function(input, gp)
 	if gp or Typing() then return end
 	for _, m in ipairs(Modules) do
 		if m.Bind == key then
-			if m.Action or m.BindMode ~= "Hold" then ToggleModule(m)
-			elseif not m.Enabled then m._held = true; SetEnabled(m, true) end
+			if m.Action or m.BindMode ~= "Hold" then ToggleModule(m) end
 		end
 	end
 end)
 end
 
-Conn(UIS.InputEnded, function(input)
-	if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+-- Hold keybinds: checked every frame from the real key state, so they can't miss a press or get stuck
+Conn(RunService.Heartbeat, function()
 	for _, m in ipairs(Modules) do
-		if m.Bind == input.KeyCode and m._held then
-			m._held = false
-			if m.Enabled then SetEnabled(m, false) end
+		if m.Bind and m.BindMode == "Hold" and not m.Action and not m.Passive then
+			local down = UIS:IsKeyDown(m.Bind) and not Typing() and not Listening
+			if down and not m.Enabled and not m._held then
+				m._held = true
+				SetEnabled(m, true)
+			elseif not down and m._held then
+				m._held = false
+				if m.Enabled then SetEnabled(m, false) end
+			end
 		end
 	end
 end)
@@ -5184,6 +5260,9 @@ function ui.Unload()
 	for _, m in ipairs(Modules) do if m.Enabled then SetEnabled(m, false, true) end end
 	for _, c in ipairs(Conns) do c:Disconnect() end
 	pcall(function() RunService:UnbindFromRenderStep("ZenithRender") end)
+	for _, n in ipairs({ "ZenithWheel", "ZenithTKWheel", "ZenithTabGui", "ZenithVFlySink" }) do
+		pcall(function() game:GetService("ContextActionService"):UnbindAction(n) end)
+	end
 	Modal.Modal = false
 	Blur:Destroy()
 	Gui:Destroy()
@@ -5192,6 +5271,10 @@ end
 ----------------------------------------------------------------------
 -- start
 ----------------------------------------------------------------------
+-- anything a previous copy of Zenith left bound (it can stop the scroll wheel from zooming the camera)
+for _, n in ipairs({ "ZenithWheel", "ZenithTKWheel", "ZenithTabGui", "ZenithVFlySink" }) do
+	pcall(function() game:GetService("ContextActionService"):UnbindAction(n) end)
+end
 SetEnabled(ArrayList, true, true)
 SetEnabled(Notifs, true, true)
 SetEnabled(HUDm, true, true)
