@@ -1006,6 +1006,86 @@ Module{ Name = "Spider", Category = "Movement", Desc = "Climb up walls by walkin
 		end
 	end }
 
+Module{ Name = "FreeClimb", Category = "Movement", Desc = "Climb any wall like a ladder. Walk into it to start, then W and S go up and down, A and D go sideways, and you can mix them to go diagonal. Jump, touch the ground or reach the top to let go.",
+	Settings = {
+		Slider("Speed", 4, 80, 1, 22, "How fast you climb, in studs per second."),
+		Slider("Reach", 1.5, 6, 0.5, 3, "How close to a wall you have to walk to grab it."),
+	},
+	OnEnable = function(m)
+		m._c, m._jump = nil, false
+		Hook(m, UIS.JumpRequest, function() m._jump = true end)
+	end,
+	OnDisable = function(m)
+		local r = Root()
+		if m._c and r then r.AssemblyLinearVelocity = Vector3.zero end
+		m._c = nil
+	end,
+	OnTick = function(m, dt)
+		local h, r = Hum(), Root()
+		if not h or not r or h.Health <= 0 then m._c = nil return end
+		local V, now, c = m.Values, os.clock(), m._c
+		local function wall(from, dir, len)
+			local hit = workspace:Raycast(from, dir * len, RayParams())
+			if hit and not hit.Instance:IsA("TrussPart") then
+				local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+				if mdl and mdl:FindFirstChildOfClass("Humanoid") then return nil end
+				if hit.Normal.Y < 0.75 and hit.Normal.Y > -0.75 then return hit end
+			end
+			return nil
+		end
+		if not c then
+			m._jump = false
+			if h.Sit or h.MoveDirection.Magnitude < 0.1 then return end
+			local md = Vector3.new(h.MoveDirection.X, 0, h.MoveDirection.Z).Unit
+			local hit = wall(r.Position, md, V.Reach)
+			if hit then m._c = { n = hit.Normal, t = now + 0.25 } end
+			return
+		end
+		-- climbing
+		local jumped = m._jump or h.Jump or Down(Enum.KeyCode.Space)
+		m._jump = false
+		if jumped and now > c.t then
+			r.AssemblyLinearVelocity = c.n * 18 + Vector3.new(0, h.JumpPower * 0.85, 0)
+			m._c = nil
+			return
+		end
+		local mv = ui.MoveVec()
+		local x = (Down(Enum.KeyCode.D) and 1 or 0) - (Down(Enum.KeyCode.A) and 1 or 0) + mv.X
+		local y = (Down(Enum.KeyCode.W) and 1 or 0) - (Down(Enum.KeyCode.S) and 1 or 0) + mv.Y
+		local inp = Vector3.new(x, y, 0)
+		if inp.Magnitude > 1 then inp = inp.Unit end
+		local n = c.n
+		local up = (Vector3.yAxis - n * n.Y).Unit
+		local right = (-n):Cross(Vector3.yAxis)
+		right = right.Magnitude > 0.01 and right.Unit or Vector3.xAxis
+		local pos = r.Position + (up * inp.Y + right * inp.X) * V.Speed * dt
+		local hit = wall(pos + n * 0.8, -n, 3.2)
+		if not hit then
+			if inp.Y > 0.2 then
+				-- reached the top: step up and over
+				local over = Vector3.new(-n.X, 0, -n.Z)
+				over = over.Magnitude > 0.01 and over.Unit or Vector3.zero
+				r.CFrame = CFrame.new(r.Position + Vector3.new(0, 2.6, 0) + over * 2.2) * r.CFrame.Rotation
+				r.AssemblyLinearVelocity = Vector3.zero
+				m._c = nil
+			else
+				r.AssemblyLinearVelocity = Vector3.zero
+			end
+			return
+		end
+		c.n = hit.Normal
+		-- standing on the ground again ends it, unless you are still going up
+		if now > c.t and inp.Y <= 0.1 and workspace:Raycast(r.Position, Vector3.new(0, -(h.HipHeight + r.Size.Y / 2 + 0.4), 0), RayParams()) then
+			m._c = nil
+			return
+		end
+		local np = hit.Position + hit.Normal * 1.5
+		r.CFrame = CFrame.lookAt(np, np - hit.Normal, Vector3.yAxis)
+		r.AssemblyLinearVelocity = Vector3.zero
+		r.AssemblyAngularVelocity = Vector3.zero
+		pcall(function() h:ChangeState(Enum.HumanoidStateType.Climbing) end)
+	end }
+
 Module{ Name = "Gravity", Category = "Movement", Desc = "Changes gravity for your own physics. Low values make you float, high values slam you down.",
 	Settings = { Slider("Gravity", 0, 400, 1, 40, "Gravity in studs per second squared. Roblox's default is 196.2.") },
 	OnEnable = function(m) m._orig = workspace.Gravity end,
