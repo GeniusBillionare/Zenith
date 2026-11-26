@@ -2485,6 +2485,146 @@ Module{ Name = "Waypoints", Category = "Utility", Passive = true, NoSave = true,
 		end),
 	} }
 end
+-- FPS Unlocker
+Module{ Name = "FPS Unlocker", Category = "Utility", Desc = "Raises the game's frame rate cap above the default 60.",
+	Settings = {
+		Slider("FPS Cap", 30, 1000, 10, 240, "The highest frame rate the game is allowed to run at."),
+		Toggle("Uncapped", false, "Removes the limit completely. Your screen and hardware decide the speed."),
+	},
+	OnEnable = function(m)
+		if type(setfpscap) ~= "function" then
+			ui.Notify("Your executor can't change the FPS cap", false)
+			task.defer(function() SetEnabled(m, false, true) end)
+			return
+		end
+		pcall(setfpscap, m.Values.Uncapped and 0 or m.Values["FPS Cap"])
+	end,
+	OnChanged = function(m)
+		if m.Enabled and type(setfpscap) == "function" then pcall(setfpscap, m.Values.Uncapped and 0 or m.Values["FPS Cap"]) end
+	end,
+	OnDisable = function(m) if type(setfpscap) == "function" then pcall(setfpscap, 60) end end }
+
+-- High Performance Mode: client-side only. Everything it changes is remembered and put back when it is turned off.
+ui.HP = {}
+function ui.HP.Set(m, inst, prop, val)
+	local ok, old = pcall(function() return inst[prop] end)
+	if ok and old ~= val then
+		local o = m._o
+		o[#o + 1] = { inst, prop, old }
+		pcall(function() inst[prop] = val end)
+	end
+end
+function ui.HP.Do(m, inst)
+	if not m._o or inst.Name:sub(1, 6) == "Zenith" or inst:IsA("Terrain") then return end
+	local V = m.Values
+	local function set(prop, val) ui.HP.Set(m, inst, prop, val) end
+	if inst:IsA("BasePart") or inst:IsA("Decal") or inst:IsA("Texture") or inst:IsA("SurfaceAppearance") or inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam") or inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles") then
+		if V["Keep Players"] then
+			local mdl = inst:FindFirstAncestorOfClass("Model")
+			if mdl and m._chars[mdl] then return end
+		end
+	end
+	if inst:IsA("BasePart") then
+		if V["Simple Materials"] then
+			set("Material", Enum.Material.Plastic); set("Reflectance", 0)
+			if inst:IsA("MeshPart") then set("RenderFidelity", Enum.RenderFidelity.Performance) end
+		end
+		if V["No Shadows"] then set("CastShadow", false) end
+	elseif inst:IsA("Decal") or inst:IsA("Texture") then
+		if V["Remove Textures"] then set("Transparency", 1) end
+	elseif inst:IsA("SurfaceAppearance") then
+		if V["Remove Textures"] then
+			local o = m._o
+			o[#o + 1] = { inst, "Parent", inst.Parent }
+			inst.Parent = nil
+		end
+	elseif inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam") or inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles") then
+		if V["No Particles"] then set("Enabled", false) end
+	elseif inst:IsA("PostEffect") then
+		if V["No Post Effects"] then set("Enabled", false) end
+	elseif inst:IsA("Atmosphere") then
+		if V["No Post Effects"] then set("Density", 0) end
+	end
+end
+function ui.HP.Apply(m)
+	m._o, m._chars = {}, {}
+	local V = m.Values
+	local function watch(p)
+		if p.Character then m._chars[p.Character] = true end
+		Hook(m, p.CharacterAdded, function(c) m._chars[c] = true end)
+	end
+	for _, p in ipairs(Players:GetPlayers()) do watch(p) end
+	Hook(m, Players.PlayerAdded, watch)
+	ui.Perf = V["Optimize Zenith"] and true or false
+	if V["No Shadows"] then ui.HP.Set(m, Lighting, "GlobalShadows", false) end
+	if V["Simple Materials"] then
+		ui.HP.Set(m, Lighting, "EnvironmentDiffuseScale", 0); ui.HP.Set(m, Lighting, "EnvironmentSpecularScale", 0)
+	end
+	if V["Flat Terrain"] then
+		local t = workspace.Terrain
+		ui.HP.Set(m, t, "WaterWaveSize", 0); ui.HP.Set(m, t, "WaterWaveSpeed", 0); ui.HP.Set(m, t, "WaterReflectance", 0)
+		pcall(function() ui.HP.Set(m, t, "Decoration", false) end)
+	end
+	if V["Low Quality"] then pcall(function() ui.HP.Set(m, settings().Rendering, "QualityLevel", Enum.QualityLevel.Level01) end) end
+	Hook(m, workspace.DescendantAdded, function(d) task.defer(pcall, ui.HP.Do, m, d) end)
+	Hook(m, Lighting.DescendantAdded, function(d) task.defer(pcall, ui.HP.Do, m, d) end)
+	local token = {}
+	m._tok = token
+	task.spawn(function()
+		local n = 0
+		for _, root in ipairs({ workspace, Lighting }) do
+			for _, d in ipairs(root:GetDescendants()) do
+				if m._tok ~= token then return end
+				pcall(ui.HP.Do, m, d)
+				n += 1
+				if n % 250 == 0 then task.wait() end
+			end
+		end
+		if m._tok == token then ui.Notify("High Performance Mode applied", true) end
+	end)
+end
+function ui.HP.Restore(m, done)
+	local o = m._o
+	m._o, m._tok = nil, nil
+	ui.Perf = false
+	task.spawn(function()
+		if o then
+			for i = #o, 1, -1 do
+				local e = o[i]
+				pcall(function() e[1][e[2]] = e[3] end)
+				if i % 250 == 0 then task.wait() end
+			end
+		end
+		if done then done() end
+	end)
+end
+Module{ Name = "High Performance Mode", Category = "Utility", Desc = "Strips detail from the game on your screen only, to raise your frame rate: simple materials, no textures, no shadows, no particles. Everything is put back when you turn it off.",
+	Settings = {
+		ui.Header("World"),
+		Toggle("Simple Materials", true, "Turns every material into plain plastic and removes shine. Meshes drop to their cheapest detail level."),
+		Toggle("Remove Textures", true, "Hides decals and textures and removes surface appearance maps."),
+		Toggle("No Shadows", true, "Turns off shadows everywhere."),
+		Toggle("No Particles", true, "Turns off particles, trails, beams, fire and smoke."),
+		Toggle("No Post Effects", true, "Turns off bloom, blur, color correction, depth of field, sun rays and atmosphere."),
+		Toggle("Flat Terrain", true, "Flattens water waves and reflections and removes grass."),
+		Toggle("Low Quality", true, "Drops Roblox's graphics quality to the lowest level."),
+		Toggle("Keep Players", true, "Leaves every player's character, including yours, looking normal."),
+		ui.Header("Zenith"),
+		Toggle("Optimize Zenith", true, "Makes Zenith itself lighter: animated themes and the aurora update less often."),
+	},
+	OnEnable = function(m) ui.HP.Apply(m) end,
+	OnChanged = function(m, name)
+		if not m.Enabled or not m._o then return end
+		if name == "Optimize Zenith" then ui.Perf = m.Values[name] return end
+		local token = {}
+		m._re = token
+		ui.HP.Restore(m, function() if m._re == token and m.Enabled then ui.HP.Apply(m) end end)
+	end,
+	OnDisable = function(m)
+		m._re = nil
+		ui.HP.Restore(m)
+	end }
+
 Module{ Name = "TP To Spawn", Category = "Utility", Desc = "Teleports you to the first spawn point in the map.",
 	Action = function()
 		local s, r = workspace:FindFirstChildWhichIsA("SpawnLocation", true), Root()
@@ -4794,6 +4934,44 @@ end
 for i, cat in ipairs(Categories) do CreatePanel(cat, i) end
 end
 
+-- small vector icons for the Hub rows, built from rotated frames so no images are needed
+function ui.Icon(parent, kind, px, py)
+	local box = New("Frame", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1 }, parent)
+	local fills, strokes = {}, {}
+	local function bar(cx, cy, w, h, rot, round)
+		local f = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(cx, cy), Size = UDim2.fromOffset(w, h), Rotation = rot or 0, BorderSizePixel = 0 }, box)
+		if round then New("UICorner", { CornerRadius = UDim.new(1, 0) }, f) end
+		fills[#fills + 1] = f
+	end
+	local function ring(cx, cy, w, h, th)
+		local f = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(cx, cy), Size = UDim2.fromOffset(w, h), BackgroundTransparency = 1, BorderSizePixel = 0 }, box)
+		New("UICorner", { CornerRadius = UDim.new(1, 0) }, f)
+		strokes[#strokes + 1] = New("UIStroke", { Thickness = th }, f)
+	end
+	if kind == "Combat" then
+		bar(9.5, 6.5, 2, 11, 45); bar(6.4, 9.6, 6, 1.8, 45); bar(4.6, 11.4, 1.8, 3.6, 45); bar(3.2, 12.8, 2.4, 2.4, 0, true)
+	elseif kind == "Movement" then
+		bar(10, 3, 3.2, 3.2, 0, true); bar(8.2, 7.6, 2, 6, 22); bar(8.9, 11.6, 1.8, 4.6, -38); bar(5.6, 11.7, 1.8, 4.6, 40)
+		bar(10.6, 7.4, 1.6, 3.8, -55); bar(5.6, 7.3, 1.6, 3.8, 50)
+	elseif kind == "Player" then
+		bar(8, 4.6, 5, 5, 0, true); bar(8, 12.6, 11, 5, 0, true)
+	elseif kind == "Render" then
+		ring(8, 8, 15, 8.5, 1.5); bar(8, 8, 4, 4, 0, true)
+	elseif kind == "Utility" then
+		bar(8.2, 8.6, 2, 11, 45); ring(11.4, 4.6, 5.5, 5.5, 1.6); bar(4.6, 12.4, 3, 3, 0, true)
+	else
+		ring(8, 8, 8.5, 8.5, 2)
+		for k = 0, 7 do
+			local a = math.rad(k * 45)
+			bar(8 + 6.1 * math.sin(a), 8 - 6.1 * math.cos(a), 2.6, 2.6, k * 45)
+		end
+	end
+	return function(c)
+		for _, f in ipairs(fills) do f.BackgroundColor3 = c end
+		for _, st in ipairs(strokes) do st.Color = c end
+	end
+end
+
 -- the Hub is the only tab open at first; it opens and closes every other tab
 local HubPanel, HubContent
 local HubPaints = {}
@@ -4853,6 +5031,8 @@ do
 
 	for i, cat in ipairs(Categories) do
 		local btn, nameL = Row(i, cat)
+		nameL.Position = UDim2.fromOffset(34, 0)
+		local setIcon = ui.Icon(btn, cat, 10, math.floor((ROWH - 16) / 2))
 		New("TextLabel", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 0), Size = UDim2.new(0.3, 0, 1, 0), BackgroundTransparency = 1, Text = tostring(#ByCat[cat]), Font = FONT, TextSize = 11, TextColor3 = C_DIM, TextXAlignment = Enum.TextXAlignment.Right }, btn)
 		local hover = false
 		local function paint()
@@ -4865,6 +5045,7 @@ do
 				btn.BackgroundTransparency = 0.05
 			end
 			nameL.TextColor3 = (open or hover) and WHITE or C_LIGHT
+			setIcon(nameL.TextColor3)
 		end
 		AddPainter(btn, paint)
 		table.insert(HubPaints, paint)
@@ -5398,8 +5579,12 @@ RunService:BindToRenderStep("ZenithRender", Enum.RenderPriority.Camera.Value + 1
 	for _, m in ipairs(Modules) do if m.Enabled and m.OnRender then Safe(m.OnRender, m, dt) end end
 	Safe(UpdateESP)
 	Safe(UpdateHover)
-	if ThemeName == "Rainbow" or Themes.G[ThemeName] then Repaint() end
-	Safe(ui.AuroraStep)
+	ui._acc = (ui._acc or 0) + dt
+	if not ui.Perf or ui._acc >= 0.05 then
+		ui._acc = 0
+		if ThemeName == "Rainbow" or Themes.G[ThemeName] then Repaint() end
+		Safe(ui.AuroraStep)
+	end
 	Safe(ui.ScrollStep, dt)
 end)
 
