@@ -253,8 +253,7 @@ function ui.DrawLogo(parent, height, opts)
 		end
 	end
 	-- first choice: paint the logo once into a high resolution image with smooth edges
-	local okImg = pcall(function()
-		local k = height <= 48 and 2 or math.clamp(math.floor(900 / math.max(FW * s, height)), 1, 5)
+	local function cover(k)
 		local sr = s * k
 		local TW, TH = math.ceil(FW * sr), math.ceil(height * k)
 		local A = table.create(TW * TH, 0)
@@ -299,6 +298,10 @@ function ui.DrawLogo(parent, height, opts)
 				end
 			end
 		end
+		return A, TW, TH
+	end
+	local okImg = pcall(function()
+		local A, TW, TH = cover(height <= 48 and 2 or math.clamp(math.floor(900 / math.max(FW * s, height)), 1, 5))
 		local buf = buffer.create(TW * TH * 4)
 		for i = 1, TW * TH do
 			local o = (i - 1) * 4
@@ -312,6 +315,14 @@ function ui.DrawLogo(parent, height, opts)
 		if not fixed then AddPainter(img, function() img.ImageColor3 = Accent(0) end) end
 	end)
 	if okImg then return root end
+	if height <= 64 then
+		-- small logos: one pixel of exact coverage per frame, so edges are smooth at the size they are shown at
+		local A, TW, TH = cover(1)
+		local frames = ui.PixelFrames(root, A, TW, TH)
+		if fixed then for _, f in ipairs(frames) do f.BackgroundColor3 = fixed end
+		else AddPainter(root, function() local c = Accent(0); for _, f in ipairs(frames) do f.BackgroundColor3 = c end end) end
+		return root
+	end
 	for i, p in ipairs(ui.LogoShapes.Mark) do fill(p, 0) end
 	for i, d in ipairs(ui.LogoShapes.Dots) do
 		local size = math.max(2, d[3] * 2 * s)
@@ -2538,6 +2549,7 @@ function ui.HP.Do(m, inst)
 			if inst:IsA("MeshPart") then set("RenderFidelity", Enum.RenderFidelity.Performance) end
 		end
 		if V["No Shadows"] then set("CastShadow", false) end
+		if V["Cull Distant Parts"] and m._parts then m._parts[#m._parts + 1] = inst end
 	elseif inst:IsA("Decal") or inst:IsA("Texture") then
 		if V["Remove Textures"] then set("Transparency", 1) end
 	elseif inst:IsA("SurfaceAppearance") then
@@ -2548,6 +2560,15 @@ function ui.HP.Do(m, inst)
 		end
 	elseif inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam") or inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles") then
 		if V["No Particles"] then set("Enabled", false) end
+	elseif inst:IsA("Light") then
+		if V["No Lights"] then set("Enabled", false) end
+	elseif inst:IsA("Explosion") then
+		set("Visible", false)
+	elseif inst:IsA("Humanoid") then
+		if V["Simplify Players"] and inst.Parent ~= LP.Character then
+			set("DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
+			set("HealthDisplayType", Enum.HumanoidHealthDisplayType.AlwaysOff)
+		end
 	elseif inst:IsA("PostEffect") then
 		if V["No Post Effects"] then set("Enabled", false) end
 	elseif inst:IsA("Atmosphere") then
@@ -2568,8 +2589,12 @@ function ui.HP.Apply(m)
 	if V["Simple Materials"] then
 		ui.HP.Set(m, Lighting, "EnvironmentDiffuseScale", 0); ui.HP.Set(m, Lighting, "EnvironmentSpecularScale", 0)
 	end
+	m._parts, m._hid, m._ci = {}, {}, 1
+	if V["Throttle Physics"] then pcall(function() ui.HP.Set(m, settings().Physics, "PhysicsEnvironmentalThrottle", Enum.EnviromentalPhysicsThrottle.Always) end) end
+	if V["Uncap FPS"] and type(setfpscap) == "function" then pcall(setfpscap, 0); m._fpscap = true end
 	if V["Flat Terrain"] then
 		local t = workspace.Terrain
+		pcall(function() ui.HP.Set(m, t.Clouds, "Enabled", false) end)
 		ui.HP.Set(m, t, "WaterWaveSize", 0); ui.HP.Set(m, t, "WaterWaveSpeed", 0); ui.HP.Set(m, t, "WaterReflectance", 0)
 		pcall(function() ui.HP.Set(m, t, "Decoration", false) end)
 	end
@@ -2588,7 +2613,7 @@ function ui.HP.Apply(m)
 		add(V["No Post Effects"], { "FFlagDisablePostFx", "True" })
 		add(V["Flat Terrain"], { "FIntFRMMinGrassDistance", "0" }, { "FIntFRMMaxGrassDistance", "0" }, { "FIntRenderGrassDetailStrands", "0" })
 		add(V["Simple Materials"], { "DFIntCSGLevelOfDetailSwitchingDistance", "0" }, { "DFIntCSGLevelOfDetailSwitchingDistanceL12", "0" }, { "DFIntCSGLevelOfDetailSwitchingDistanceL23", "0" }, { "DFIntCSGLevelOfDetailSwitchingDistanceL34", "0" })
-		add(V["Low Quality"], { "DFIntDebugFRMQualityLevelOverride", "1" }, { "FIntDebugForceMSAASamples", "0" })
+		add(V["Low Quality"], { "DFIntDebugFRMQualityLevelOverride", "1" }, { "FIntDebugForceMSAASamples", "0" }, { "FIntRenderLocalLightUpdatesMax", "1" }, { "FIntRenderLocalLightUpdatesMin", "1" })
 		for _, f in ipairs(list) do
 			local old
 			if type(getfflag) == "function" then pcall(function() old = getfflag(f[1]) end) end
@@ -2601,8 +2626,35 @@ function ui.HP.Apply(m)
 	Hook(m, Lighting.DescendantAdded, function(d) local q = m._q; if q then q[#q + 1] = d end end)
 	Hook(m, RunService.Heartbeat, function()
 		local q = m._q
-		if not q or #q == 0 then return end
-		for _ = 1, math.min(#q, 60) do pcall(ui.HP.Do, m, table.remove(q, 1)) end
+		if q and #q > 0 then
+			for _ = 1, math.min(#q, 60) do pcall(ui.HP.Do, m, table.remove(q, 1)) end
+		end
+		-- distant parts are made invisible so they are not drawn, a slice of the list per frame
+		local list = m._parts
+		if V["Cull Distant Parts"] and list and #list > 0 then
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+			local cp, R = cam.CFrame.Position, V["Render Distance"]
+			local hid = m._hid
+			local i = m._ci
+			for _ = 1, 250 do
+				if i > #list then i = 1 end
+				local part = list[i]
+				if part.Parent then
+					local far = (part.Position - cp).Magnitude - part.Size.Magnitude * 0.5 > R
+					if far then
+						if not hid[part] then hid[part] = true; part.LocalTransparencyModifier = 1 end
+					elseif hid[part] and (part.Position - cp).Magnitude - part.Size.Magnitude * 0.5 < R * 0.9 then
+						hid[part] = nil; part.LocalTransparencyModifier = 0
+					end
+					i += 1
+				else
+					hid[part] = nil
+					list[i] = list[#list]; list[#list] = nil
+				end
+			end
+			m._ci = i
+		end
 	end)
 	local token = {}
 	m._tok = token
@@ -2621,7 +2673,13 @@ function ui.HP.Apply(m)
 end
 function ui.HP.Restore(m, done)
 	local o = m._o
-	m._o, m._tok, m._q = nil, nil, nil
+	if m._hid then for part in pairs(m._hid) do pcall(function() part.LocalTransparencyModifier = 0 end) end end
+	if m._fpscap and type(setfpscap) == "function" then
+		local unlocker
+		for _, x in ipairs(Modules) do if x.Name == "FPS Unlocker" then unlocker = x break end end
+		if not (unlocker and unlocker.Enabled) then pcall(setfpscap, 60) end
+	end
+	m._o, m._tok, m._q, m._parts, m._hid, m._fpscap = nil, nil, nil, nil, nil, nil
 	if m._ff and type(setfflag) == "function" then for _, f in ipairs(m._ff) do pcall(setfflag, f[1], f[2]) end end
 	m._ff = nil
 	ui.Perf = false
@@ -2644,11 +2702,16 @@ Module{ Name = "High Performance Mode", Category = "Utility", Desc = "Strips det
 		Toggle("No Shadows", true, "Turns off shadows everywhere."),
 		Toggle("No Particles", true, "Turns off particles, trails, beams, fire and smoke."),
 		Toggle("No Post Effects", true, "Turns off bloom, blur, color correction, depth of field, sun rays and atmosphere."),
+		Toggle("No Lights", true, "Turns off point lights, spotlights and surface lights. Many lights are very heavy on weak graphics cards."),
 		Toggle("Flat Terrain", true, "Flattens water waves and reflections and removes grass."),
 		Toggle("Low Quality", true, "Drops Roblox's graphics quality to the lowest level."),
+		Toggle("Cull Distant Parts", true, "Stops drawing parts that are far from your camera. This is one of the biggest boosts on weak machines."),
+		Slider("Render Distance", 100, 3000, 50, 600, "How far from your camera, in studs, parts are still drawn. Lower is faster, but the world pops out sooner."),
 		Toggle("Keep Players", true, "Leaves every player's character, including yours, looking normal."),
 		Toggle("Simplify Players", false, "Hides other players' hats and accessories on your screen. Helps a lot in crowded servers."),
 		ui.Header("Engine"),
+		Toggle("Uncap FPS", true, "Removes the 60 FPS limit while this mode is on."),
+		Toggle("Throttle Physics", true, "Lets Roblox simulate far away physics less often."),
 		Toggle("Fast Flags", true, "Also changes Roblox's own graphics settings, the way launchers like Bloxstrap do: lowest texture quality, no shadow rendering, no grass, simplest model detail. Needs an executor with setfflag. Some of these only apply after you rejoin, and they are put back when your executor can read the old values."),
 		ui.Header("Zenith"),
 		Toggle("Optimize Zenith", true, "Makes Zenith itself lighter: animated themes and the aurora update less often."),
@@ -2678,7 +2741,9 @@ Module{ Name = "AntiCheat", Category = "Utility", Desc = "Watches the other play
 		Slider("Cooldown", 5, 120, 5, 25, "Seconds before the same player can be flagged for the same thing again."),
 	},
 	OnEnable = function(m)
-		m._ps, m._acc = {}, 0
+		m._ps, m._acc, m._spawns = {}, 0, {}
+		for _, d in ipairs(workspace:GetDescendants()) do if d:IsA("SpawnLocation") then m._spawns[#m._spawns + 1] = d end end
+		Hook(m, workspace.DescendantAdded, function(d) if d:IsA("SpawnLocation") then m._spawns[#m._spawns + 1] = d end end)
 		m._rp = RaycastParams.new()
 		m._rp.FilterType = Enum.RaycastFilterType.Exclude
 		Hook(m, Players.PlayerRemoving, function(p) m._ps[p] = nil end)
@@ -2694,6 +2759,21 @@ Module{ Name = "AntiCheat", Category = "Utility", Desc = "Watches the other play
 			if (st.cd[kind] or 0) > now then return end
 			st.cd[kind] = now + V.Cooldown
 			ui.Notify("AntiCheat: " .. p.DisplayName .. " (@" .. p.Name .. ") " .. text, false)
+		end
+		-- a teleport the game does itself (lobby, round start, checkpoint) moves several people at once, moves you too,
+		-- or lands on a spawn. Those are not flagged, and nobody is checked for speed or fly for a few seconds after.
+		local jumped = {}
+		local myRoot = Root()
+		local ownJump = false
+		if myRoot then
+			if m._myPos and (myRoot.Position - m._myPos).Magnitude > 120 then ownJump = true end
+			m._myPos = myRoot.Position
+		end
+		local function nearSpawn(pos)
+			for _, sp in ipairs(m._spawns) do
+				if sp.Parent and (sp.Position - pos).Magnitude < 40 then return true end
+			end
+			return false
 		end
 		for _, p in ipairs(Players:GetPlayers()) do
 			if p ~= LP then
@@ -2714,9 +2794,13 @@ Module{ Name = "AntiCheat", Category = "Utility", Desc = "Watches the other play
 					local vy = d.Y / step
 					local vel, ang = root.AssemblyLinearVelocity.Magnitude, root.AssemblyAngularVelocity.Magnitude
 					local seated = hum.Sit or hum.SeatPart ~= nil
-					if now - st.born > 3 and not seated then
-						-- teleport: a big jump that no speed explains
-						if V.Teleport and all > 220 and vel < 60 and step < 1 then flag(p, st, "tp", "teleported a long way instantly") end
+					if d.Magnitude > 120 then
+						-- any big jump gives a grace period before other checks, and resets their counters
+						st.grace = now + 4
+						st.fly, st.climb, st.spd, st.fling = 0, 0, 0, 0
+						if now - st.born > 3 and vel < 60 and not nearSpawn(pos) then jumped[#jumped + 1] = { p, st } end
+					end
+					if now - st.born > 3 and not seated and now > (st.grace or 0) then
 						-- fling: a speed that does not match how they really move, or spinning in place
 						local spoof = vel > 300 and all < vel * 0.25
 						local spin = ang > 80 and flat < 25
@@ -2742,6 +2826,11 @@ Module{ Name = "AntiCheat", Category = "Utility", Desc = "Watches the other play
 					end
 				end
 			end
+		end
+		-- one lone player teleporting while you did not is the only case that gets reported
+		if V.Teleport and #jumped == 1 and not ownJump then
+			local p, st = jumped[1][1], jumped[1][2]
+			flag(p, st, "tp", "teleported a long way instantly")
 		end
 	end }
 
@@ -4740,19 +4829,29 @@ end
 
 local function SliderRow(m, s, parent, order)
 	local row = SettingButton(parent, order)
-	local fill = New("Frame", { Size = UDim2.fromScale(0, 1), BorderSizePixel = 0, BackgroundTransparency = 0.5 }, row)
+	-- thin rounded track along the bottom with a knob, like Vape's sliders
+	local track = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -3), Size = UDim2.new(1, -20, 0, 3), BackgroundColor3 = Color3.fromRGB(44, 44, 58), BorderSizePixel = 0 }, row)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+	local fill = New("Frame", { Size = UDim2.fromScale(0, 1), BorderSizePixel = 0 }, track)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, fill)
 	Reg(fill, "BackgroundColor3")
-	SettingLabel(row, s.Name)
+	local knob = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0, 0.5), Size = UDim2.fromOffset(9, 9), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, track)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
+	local lbl = SettingLabel(row, s.Name)
+	lbl.Position = UDim2.fromOffset(10, -3)
 	local valL = RightLabel(row)
+	valL.Position = UDim2.new(1, -10, 0, -3)
 	local function show()
 		local v = m.Values[s.Name]
-		fill.Size = UDim2.fromScale(math.clamp((v - s.Min) / (ui.MaxOf(s) - s.Min), 0, 1), 1)
+		local f = math.clamp((v - s.Min) / (ui.MaxOf(s) - s.Min), 0, 1)
+		fill.Size = UDim2.fromScale(f, 1)
+		knob.Position = UDim2.fromScale(f, 0.5)
 		valL.Text = Fmt(v)
 	end
 	show()
 	table.insert(ui.SliderRows, { row = row, show = show })
 	local function setFromX(x)
-		local a = math.clamp((x - row.AbsolutePosition.X) / math.max(row.AbsoluteSize.X, 1), 0, 1)
+		local a = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
 		local hi = ui.MaxOf(s)
 		local v = s.Min + (hi - s.Min) * a
 		v = s.Min + math.floor((v - s.Min) / s.Step + 0.5) * s.Step
@@ -4788,10 +4887,25 @@ end
 local function ToggleRow(m, s, parent, order)
 	local row = SettingButton(parent, order)
 	SettingLabel(row, s.Name)
-	local box = New("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(12, 12), BorderSizePixel = 0 }, row)
-	New("UIStroke", { Color = Color3.fromRGB(70, 70, 88), Thickness = 1 }, box)
-	local function paint() box.BackgroundColor3 = m.Values[s.Name] and Accent() or Color3.fromRGB(30, 30, 40) end
-	AddPainter(box, paint)
+	-- a small switch: the knob slides and the track takes the theme color
+	local track = New("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(26, 13), BorderSizePixel = 0 }, row)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+	local knob = New("Frame", { AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.fromOffset(9, 9), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, track)
+	New("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
+	local last = m.Values[s.Name] and true or false
+	local function spot(on) return UDim2.new(0, on and 15 or 2, 0.5, 0) end
+	knob.Position = spot(last)
+	local function paint()
+		local on = m.Values[s.Name] and true or false
+		track.BackgroundColor3 = on and Accent() or Color3.fromRGB(44, 44, 58)
+		knob.BackgroundColor3 = on and WHITE or Color3.fromRGB(150, 150, 165)
+		if on ~= last then
+			last = on
+			TweenService:Create(knob, TweenInfo.new(0.12, Enum.EasingStyle.Quad), { Position = spot(on) }):Play()
+		end
+	end
+	paint()
+	AddPainter(track, paint)
 	row.MouseButton1Click:Connect(function() m.Values[s.Name] = not m.Values[s.Name]; paint(); changed(m, s.Name) end)
 	return row
 end
@@ -5054,44 +5168,7 @@ end
 for i, cat in ipairs(Categories) do CreatePanel(cat, i) end
 end
 
--- small vector icons for the Hub rows, built from rotated frames so no images are needed
-function ui.IconFrames(parent, kind, px, py)
-	local box = New("Frame", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1 }, parent)
-	local fills, strokes = {}, {}
-	local function bar(cx, cy, w, h, rot, round)
-		local f = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(cx, cy), Size = UDim2.fromOffset(w, h), Rotation = rot or 0, BorderSizePixel = 0 }, box)
-		if round then New("UICorner", { CornerRadius = UDim.new(1, 0) }, f) end
-		fills[#fills + 1] = f
-	end
-	local function ring(cx, cy, w, h, th)
-		local f = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(cx, cy), Size = UDim2.fromOffset(w, h), BackgroundTransparency = 1, BorderSizePixel = 0 }, box)
-		New("UICorner", { CornerRadius = UDim.new(1, 0) }, f)
-		strokes[#strokes + 1] = New("UIStroke", { Thickness = th }, f)
-	end
-	if kind == "Combat" then
-		bar(9.5, 6.5, 2, 11, 45); bar(6.4, 9.6, 6, 1.8, 45); bar(4.6, 11.4, 1.8, 3.6, 45); bar(3.2, 12.8, 2.4, 2.4, 0, true)
-	elseif kind == "Movement" then
-		bar(10, 3, 3.2, 3.2, 0, true); bar(8.2, 7.6, 2, 6, 22); bar(8.9, 11.6, 1.8, 4.6, -38); bar(5.6, 11.7, 1.8, 4.6, 40)
-		bar(10.6, 7.4, 1.6, 3.8, -55); bar(5.6, 7.3, 1.6, 3.8, 50)
-	elseif kind == "Player" then
-		bar(8, 4.6, 5, 5, 0, true); bar(8, 12.6, 11, 5, 0, true)
-	elseif kind == "Render" then
-		ring(8, 8, 15, 8.5, 1.5); bar(8, 8, 4, 4, 0, true)
-	elseif kind == "Utility" then
-		bar(8.2, 8.6, 2, 11, 45); ring(11.4, 4.6, 5.5, 5.5, 1.6); bar(4.6, 12.4, 3, 3, 0, true)
-	else
-		ring(8, 8, 8.5, 8.5, 2)
-		for k = 0, 7 do
-			local a = math.rad(k * 45)
-			bar(8 + 6.1 * math.sin(a), 8 - 6.1 * math.cos(a), 2.6, 2.6, k * 45)
-		end
-	end
-	return function(c)
-		for _, f in ipairs(fills) do f.BackgroundColor3 = c end
-		for _, st in ipairs(strokes) do st.Color = c end
-	end
-end
-
+-- small icons for the Hub and Window rows, rasterised from shapes at runtime (no images to upload)
 ui.IconShapes = {
 	Combat = { { "k", 7.9, 8.1, 13.4, 2.6, 2.2 }, { "k", 4.7, 7.6, 8.7, 11.6, 1.8 }, { "k", 6.7, 9.6, 3.7, 12.6, 1.9 }, { "c", 2.9, 13.4, 1.4 } },
 	Movement = { { "c", 10.4, 2.7, 1.8 }, { "k", 8.7, 5.3, 7.4, 9.3, 2.1 }, { "k", 7.4, 9.3, 10.4, 11.2, 1.9 }, { "k", 10.4, 11.2, 9.9, 14.3, 1.9 }, { "k", 7.4, 9.3, 5.2, 12.0, 1.9 }, { "k", 5.2, 12.0, 2.6, 12.4, 1.9 }, { "k", 8.5, 5.8, 11.6, 7.3, 1.6 }, { "k", 11.6, 7.3, 12.6, 5.4, 1.6 }, { "k", 8.3, 6.0, 5.6, 7.6, 1.6 }, { "k", 5.6, 7.6, 4.2, 5.6, 1.6 } },
@@ -5101,10 +5178,9 @@ ui.IconShapes = {
 	Settings = { { "r", 8, 8, 4.9, 2.2 }, { "k", 8.0, 3.4, 8.0, 1.5, 2.4 }, { "k", 11.25, 4.75, 12.6, 3.4, 2.4 }, { "k", 12.6, 8.0, 14.5, 8.0, 2.4 }, { "k", 11.25, 11.25, 12.6, 12.6, 2.4 }, { "k", 8.0, 12.6, 8.0, 14.5, 2.4 }, { "k", 4.75, 11.25, 3.4, 12.6, 2.4 }, { "k", 3.4, 8.0, 1.5, 8.0, 2.4 }, { "k", 4.75, 4.75, 3.4, 3.4, 2.4 } },
 }
 ui.IconImg, ui.IconEI = {}, {}
-function ui.IconContent(kind)
-	if ui.IconImg[kind] then return ui.IconImg[kind] end
+function ui.IconAlpha(kind, S, SUB)
 	local shapes = ui.IconShapes[kind] or ui.IconShapes.Settings
-	local S, SUB, N = 3, 3, 48
+	local N = 16 * S
 	local function inside(sh, x, y)
 		local t = sh[1]:gsub("^%-", "")
 		if t == "c" then return (x - sh[2]) ^ 2 + (y - sh[3]) ^ 2 <= sh[4] ^ 2
@@ -5120,7 +5196,7 @@ function ui.IconContent(kind)
 			return a1 <= R * R and a2 <= R * R and not (a1 <= R2 * R2 and a2 <= R2 * R2)
 		end
 	end
-	local buf = buffer.create(N * N * 4)
+	local A = table.create(N * N, 0)
 	for py = 0, N - 1 do
 		for px = 0, N - 1 do
 			local hit = 0
@@ -5136,10 +5212,19 @@ function ui.IconContent(kind)
 					if pos and not neg then hit += 1 end
 				end
 			end
-			local o = (py * N + px) * 4
-			buffer.writeu8(buf, o, 255); buffer.writeu8(buf, o + 1, 255); buffer.writeu8(buf, o + 2, 255)
-			buffer.writeu8(buf, o + 3, math.floor(hit / (SUB * SUB) * 255 + 0.5))
+			A[py * N + px + 1] = hit / (SUB * SUB)
 		end
+	end
+	return A, N
+end
+function ui.IconContent(kind)
+	if ui.IconImg[kind] then return ui.IconImg[kind] end
+	local A, N = ui.IconAlpha(kind, 3, 3)
+	local buf = buffer.create(N * N * 4)
+	for i = 1, N * N do
+		local o = (i - 1) * 4
+		buffer.writeu8(buf, o, 255); buffer.writeu8(buf, o + 1, 255); buffer.writeu8(buf, o + 2, 255)
+		buffer.writeu8(buf, o + 3, math.floor(A[i] * 255 + 0.5))
 	end
 	local ei = game:GetService("AssetService"):CreateEditableImage({ Size = Vector2.new(N, N) })
 	ei:WritePixelsBuffer(Vector2.zero, Vector2.new(N, N), buf)
@@ -5147,12 +5232,36 @@ function ui.IconContent(kind)
 	ui.IconImg[kind] = Content.fromObject(ei)
 	return ui.IconImg[kind]
 end
+-- turns an alpha grid into rows of 1px frames with partial transparency (used when the executor has no EditableImage)
+function ui.PixelFrames(parent, A, W, H)
+	local out = {}
+	for y = 0, H - 1 do
+		local x = 0
+		while x < W do
+			local q = math.floor(A[y * W + x + 1] * 8 + 0.5) / 8
+			if q > 0 then
+				local start = x
+				while x + 1 < W and math.floor(A[y * W + x + 2] * 8 + 0.5) / 8 == q do x += 1 end
+				out[#out + 1] = New("Frame", { Position = UDim2.fromOffset(start, y), Size = UDim2.fromOffset(x - start + 1, 1), BackgroundColor3 = WHITE, BackgroundTransparency = 1 - q, BorderSizePixel = 0 }, parent)
+			end
+			x += 1
+		end
+	end
+	return out
+end
 function ui.Icon(parent, kind, px, py)
 	local ok, content = pcall(ui.IconContent, kind)
-	if not ok then return ui.IconFrames(parent, kind, px, py) end
-	local img = New("ImageLabel", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, BorderSizePixel = 0 }, parent)
-	img.ImageContent = content
-	return function(c) img.ImageColor3 = c end
+	if ok then
+		local img = New("ImageLabel", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, BorderSizePixel = 0 }, parent)
+		img.ImageContent = content
+		return function(c) img.ImageColor3 = c end
+	end
+	local box = New("Frame", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1 }, parent)
+	if not ui.IconPix then ui.IconPix = {} end
+	local A, N = ui.IconPix[kind], 16
+	if not A then A = ui.IconAlpha(kind, 1, 4); ui.IconPix[kind] = A end
+	local frames = ui.PixelFrames(box, A, N, N)
+	return function(c) for _, f in ipairs(frames) do f.BackgroundColor3 = c end end
 end
 
 -- the Hub is the only tab open at first; it opens and closes every other tab
