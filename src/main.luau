@@ -1563,11 +1563,13 @@ Module{ Name = "TabGUI", Category = "Render", Desc = "A small menu under the Rob
 				local sel = (rec.col == 1 and rec.i == m._ci) or (rec.col == 2 and rec.i == m._mi) or (rec.col == 3 and rec.i == m._si)
 				local active = rec.col == m._lvl
 				rec.b.BackgroundTransparency = sel and 0.15 or 1
-				rec.b.BackgroundColor3 = acc:Lerp(Color3.new(0, 0, 0), active and 0.5 or 0.78)
+				local modOn = rec.col == 2 and not rec.st and rec.mod and rec.mod.Enabled and not rec.mod.Action and not rec.mod.Passive
+				rec.b.BackgroundColor3 = acc:Lerp(Color3.new(0, 0, 0), modOn and (active and 0.12 or 0.4) or (active and 0.6 or 0.82))
 				rec.bar.Visible = sel and active
 				rec.bar.BackgroundColor3 = acc
 				local on = rec.mod and rec.mod.Enabled and not rec.mod.Action and not rec.mod.Passive
 				rec.l.TextColor3 = (sel and active) and WHITE or (on and acc or C_LIGHT)
+				rec.l.Font = (sel and modOn) and FONT_B or FONT
 				if rec.st then rec.r.Text = valText(rec.mod, rec.st) end
 			end
 		end
@@ -2518,6 +2520,12 @@ function ui.HP.Do(m, inst)
 	if not m._o or inst.Name:sub(1, 6) == "Zenith" or inst:IsA("Terrain") then return end
 	local V = m.Values
 	local function set(prop, val) ui.HP.Set(m, inst, prop, val) end
+	if V["Simplify Players"] and inst:IsA("Accessory") then
+		local ch = inst.Parent
+		local hnd = inst:FindFirstChild("Handle")
+		if hnd and ch and ch ~= LP.Character and Players:GetPlayerFromCharacter(ch) then ui.HP.Set(m, hnd, "LocalTransparencyModifier", 1) end
+		return
+	end
 	if inst:IsA("BasePart") or inst:IsA("Decal") or inst:IsA("Texture") or inst:IsA("SurfaceAppearance") or inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam") or inst:IsA("Fire") or inst:IsA("Smoke") or inst:IsA("Sparkles") then
 		if V["Keep Players"] then
 			local mdl = inst:FindFirstAncestorOfClass("Model")
@@ -2565,9 +2573,37 @@ function ui.HP.Apply(m)
 		ui.HP.Set(m, t, "WaterWaveSize", 0); ui.HP.Set(m, t, "WaterWaveSpeed", 0); ui.HP.Set(m, t, "WaterReflectance", 0)
 		pcall(function() ui.HP.Set(m, t, "Decoration", false) end)
 	end
-	if V["Low Quality"] then pcall(function() ui.HP.Set(m, settings().Rendering, "QualityLevel", Enum.QualityLevel.Level01) end) end
-	Hook(m, workspace.DescendantAdded, function(d) task.defer(pcall, ui.HP.Do, m, d) end)
-	Hook(m, Lighting.DescendantAdded, function(d) task.defer(pcall, ui.HP.Do, m, d) end)
+	if V["Low Quality"] then
+		pcall(function() ui.HP.Set(m, settings().Rendering, "QualityLevel", Enum.QualityLevel.Level01) end)
+		pcall(function() ui.HP.Set(m, UserSettings():GetService("UserGameSettings"), "SavedQualityLevel", Enum.SavedQualitySetting.QualityLevel1) end)
+	end
+	if V["Simple Materials"] then pcall(function() ui.HP.Set(m, settings().Rendering, "MeshPartDetailLevel", Enum.MeshPartDetailLevel.Level04) end) end
+	-- engine flags, the same kind of settings launchers like Bloxstrap change. Some only take effect after a rejoin.
+	m._ff = {}
+	if V["Fast Flags"] and type(setfflag) == "function" then
+		local list = {}
+		local function add(on, ...) if on then for _, f in ipairs({ ... }) do list[#list + 1] = f end end end
+		add(V["Remove Textures"], { "DFFlagTextureQualityOverrideEnabled", "True" }, { "DFIntTextureQualityOverride", "0" })
+		add(V["No Shadows"], { "FIntRenderShadowIntensity", "0" }, { "DFIntCullFactorPixelThresholdShadowMapHighQuality", "2147483647" }, { "DFIntCullFactorPixelThresholdShadowMapLowQuality", "2147483647" })
+		add(V["No Post Effects"], { "FFlagDisablePostFx", "True" })
+		add(V["Flat Terrain"], { "FIntFRMMinGrassDistance", "0" }, { "FIntFRMMaxGrassDistance", "0" }, { "FIntRenderGrassDetailStrands", "0" })
+		add(V["Simple Materials"], { "DFIntCSGLevelOfDetailSwitchingDistance", "0" }, { "DFIntCSGLevelOfDetailSwitchingDistanceL12", "0" }, { "DFIntCSGLevelOfDetailSwitchingDistanceL23", "0" }, { "DFIntCSGLevelOfDetailSwitchingDistanceL34", "0" })
+		add(V["Low Quality"], { "DFIntDebugFRMQualityLevelOverride", "1" }, { "FIntDebugForceMSAASamples", "0" })
+		for _, f in ipairs(list) do
+			local old
+			if type(getfflag) == "function" then pcall(function() old = getfflag(f[1]) end) end
+			if pcall(setfflag, f[1], f[2]) and old ~= nil and old ~= "" then m._ff[#m._ff + 1] = { f[1], old } end
+		end
+	end
+	-- things that load in later are handled a few at a time, so crowded or streaming games don't hitch
+	m._q = {}
+	Hook(m, workspace.DescendantAdded, function(d) local q = m._q; if q then q[#q + 1] = d end end)
+	Hook(m, Lighting.DescendantAdded, function(d) local q = m._q; if q then q[#q + 1] = d end end)
+	Hook(m, RunService.Heartbeat, function()
+		local q = m._q
+		if not q or #q == 0 then return end
+		for _ = 1, math.min(#q, 60) do pcall(ui.HP.Do, m, table.remove(q, 1)) end
+	end)
 	local token = {}
 	m._tok = token
 	task.spawn(function()
@@ -2585,7 +2621,9 @@ function ui.HP.Apply(m)
 end
 function ui.HP.Restore(m, done)
 	local o = m._o
-	m._o, m._tok = nil, nil
+	m._o, m._tok, m._q = nil, nil, nil
+	if m._ff and type(setfflag) == "function" then for _, f in ipairs(m._ff) do pcall(setfflag, f[1], f[2]) end end
+	m._ff = nil
 	ui.Perf = false
 	task.spawn(function()
 		if o then
@@ -2609,6 +2647,9 @@ Module{ Name = "High Performance Mode", Category = "Utility", Desc = "Strips det
 		Toggle("Flat Terrain", true, "Flattens water waves and reflections and removes grass."),
 		Toggle("Low Quality", true, "Drops Roblox's graphics quality to the lowest level."),
 		Toggle("Keep Players", true, "Leaves every player's character, including yours, looking normal."),
+		Toggle("Simplify Players", false, "Hides other players' hats and accessories on your screen. Helps a lot in crowded servers."),
+		ui.Header("Engine"),
+		Toggle("Fast Flags", true, "Also changes Roblox's own graphics settings, the way launchers like Bloxstrap do: lowest texture quality, no shadow rendering, no grass, simplest model detail. Needs an executor with setfflag. Some of these only apply after you rejoin, and they are put back when your executor can read the old values."),
 		ui.Header("Zenith"),
 		Toggle("Optimize Zenith", true, "Makes Zenith itself lighter: animated themes and the aurora update less often."),
 	},
@@ -2623,6 +2664,85 @@ Module{ Name = "High Performance Mode", Category = "Utility", Desc = "Strips det
 	OnDisable = function(m)
 		m._re = nil
 		ui.HP.Restore(m)
+	end }
+
+-- AntiCheat: watches the other players in your server and warns you when someone looks like they are using exploits.
+-- It only measures how far a player actually moves between checks, since the speed a player reports can be faked.
+Module{ Name = "AntiCheat", Category = "Utility", Desc = "Watches the other players in your server and shows a notification when someone moves like they are using speed, fly, fling or teleport exploits. These are estimates, not proof.",
+	Settings = {
+		Mode("Sensitivity", { "Low", "Normal", "High" }, "Normal", "High catches more but may flag legit players. Low only flags obvious cases."),
+		Toggle("Speed", true, "Flags players moving much faster than their walk speed allows."),
+		Toggle("Fly", true, "Flags players that hover or climb in the air for several seconds."),
+		Toggle("Fling", true, "Flags players spinning or carrying a huge speed that does not match how they actually move. Players who just got flung are not flagged."),
+		Toggle("Teleport", true, "Flags players that jump a huge distance in an instant."),
+		Slider("Cooldown", 5, 120, 5, 25, "Seconds before the same player can be flagged for the same thing again."),
+	},
+	OnEnable = function(m)
+		m._ps, m._acc = {}, 0
+		m._rp = RaycastParams.new()
+		m._rp.FilterType = Enum.RaycastFilterType.Exclude
+		Hook(m, Players.PlayerRemoving, function(p) m._ps[p] = nil end)
+	end,
+	OnTick = function(m, dt)
+		m._acc += dt
+		if m._acc < 0.25 then return end
+		local step = m._acc
+		m._acc = 0
+		local V, now = m.Values, os.clock()
+		local k = ({ Low = 1.5, Normal = 1, High = 0.75 })[V.Sensitivity] or 1
+		local function flag(p, st, kind, text)
+			if (st.cd[kind] or 0) > now then return end
+			st.cd[kind] = now + V.Cooldown
+			ui.Notify("AntiCheat: " .. p.DisplayName .. " (@" .. p.Name .. ") " .. text, false)
+		end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LP then
+				local ch = p.Character
+				local root = ch and ch:FindFirstChild("HumanoidRootPart")
+				local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+				local st = m._ps[p]
+				if not root or not hum or hum.Health <= 0 then
+					m._ps[p] = nil
+				elseif not st or st.ch ~= ch then
+					m._ps[p] = { ch = ch, born = now, pos = root.Position, cd = {}, fly = 0, climb = 0, spd = 0, fling = 0, spin = 0 }
+				else
+					local pos = root.Position
+					local d = pos - st.pos
+					st.pos = pos
+					local flat = Vector3.new(d.X, 0, d.Z).Magnitude / step
+					local all = d.Magnitude / step
+					local vy = d.Y / step
+					local vel, ang = root.AssemblyLinearVelocity.Magnitude, root.AssemblyAngularVelocity.Magnitude
+					local seated = hum.Sit or hum.SeatPart ~= nil
+					if now - st.born > 3 and not seated then
+						-- teleport: a big jump that no speed explains
+						if V.Teleport and all > 220 and vel < 60 and step < 1 then flag(p, st, "tp", "teleported a long way instantly") end
+						-- fling: a speed that does not match how they really move, or spinning in place
+						local spoof = vel > 300 and all < vel * 0.25
+						local spin = ang > 80 and flat < 25
+						st.fling = (spoof or spin) and st.fling + 1 or math.max(0, st.fling - 1)
+						if V.Fling and st.fling >= math.ceil(3 * k) then flag(p, st, "fling", "may be using fling") end
+						-- speed: real movement well above what their walk speed allows
+						local limit = math.max(hum.WalkSpeed, 16) * 1.45 * k + 8
+						local fast = flat > limit and flat < 220 and ang < 40
+						st.spd = fast and st.spd + 1 or math.max(0, st.spd - 1)
+						if V.Speed and st.spd >= math.ceil(5 * k) then flag(p, st, "speed", "may be speeding (" .. math.floor(flat) .. " studs/s)") end
+						-- fly: staying up in the air, level or climbing, with nothing holding them
+						local state = hum:GetState()
+						local free = state ~= Enum.HumanoidStateType.Climbing and state ~= Enum.HumanoidStateType.Swimming
+						local air = false
+						if free then
+							m._rp.FilterDescendantsInstances = { ch, LP.Character }
+							local hit = workspace:Raycast(pos, Vector3.new(0, -14, 0), m._rp)
+							air = hit == nil
+						end
+						st.fly = (air and math.abs(vy) < 4) and st.fly + 1 or math.max(0, st.fly - 2)
+						st.climb = (air and vy > 22) and st.climb + 1 or 0
+						if V.Fly and (st.fly >= math.ceil(14 * k) or st.climb >= math.ceil(8 * k)) then flag(p, st, "fly", "may be flying") end
+					end
+				end
+			end
+		end
 	end }
 
 Module{ Name = "TP To Spawn", Category = "Utility", Desc = "Teleports you to the first spawn point in the map.",
@@ -4935,7 +5055,7 @@ for i, cat in ipairs(Categories) do CreatePanel(cat, i) end
 end
 
 -- small vector icons for the Hub rows, built from rotated frames so no images are needed
-function ui.Icon(parent, kind, px, py)
+function ui.IconFrames(parent, kind, px, py)
 	local box = New("Frame", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1 }, parent)
 	local fills, strokes = {}, {}
 	local function bar(cx, cy, w, h, rot, round)
@@ -4970,6 +5090,69 @@ function ui.Icon(parent, kind, px, py)
 		for _, f in ipairs(fills) do f.BackgroundColor3 = c end
 		for _, st in ipairs(strokes) do st.Color = c end
 	end
+end
+
+ui.IconShapes = {
+	Combat = { { "k", 7.9, 8.1, 13.4, 2.6, 2.2 }, { "k", 4.7, 7.6, 8.7, 11.6, 1.8 }, { "k", 6.7, 9.6, 3.7, 12.6, 1.9 }, { "c", 2.9, 13.4, 1.4 } },
+	Movement = { { "c", 10.4, 2.7, 1.8 }, { "k", 8.7, 5.3, 7.4, 9.3, 2.1 }, { "k", 7.4, 9.3, 10.4, 11.2, 1.9 }, { "k", 10.4, 11.2, 9.9, 14.3, 1.9 }, { "k", 7.4, 9.3, 5.2, 12.0, 1.9 }, { "k", 5.2, 12.0, 2.6, 12.4, 1.9 }, { "k", 8.5, 5.8, 11.6, 7.3, 1.6 }, { "k", 11.6, 7.3, 12.6, 5.4, 1.6 }, { "k", 8.3, 6.0, 5.6, 7.6, 1.6 }, { "k", 5.6, 7.6, 4.2, 5.6, 1.6 } },
+	Player = { { "c", 8, 4.9, 2.8 }, { "k", 3.7, 12.3, 12.3, 12.3, 5.6 } },
+	Render = { { "l", 8, 8, 4.55, 8.35, 6.85 }, { "c", 8, 8, 2.3 } },
+	Utility = { { "k", 4.6, 11.4, 10.4, 5.6, 2.4 }, { "c", 3.9, 12.1, 1.6 }, { "c", 11.3, 4.7, 3.4 }, { "-k", 11.3, 4.7, 14.8, 1.2, 2.6 } },
+	Settings = { { "r", 8, 8, 4.9, 2.2 }, { "k", 8.0, 3.4, 8.0, 1.5, 2.4 }, { "k", 11.25, 4.75, 12.6, 3.4, 2.4 }, { "k", 12.6, 8.0, 14.5, 8.0, 2.4 }, { "k", 11.25, 11.25, 12.6, 12.6, 2.4 }, { "k", 8.0, 12.6, 8.0, 14.5, 2.4 }, { "k", 4.75, 11.25, 3.4, 12.6, 2.4 }, { "k", 3.4, 8.0, 1.5, 8.0, 2.4 }, { "k", 4.75, 4.75, 3.4, 3.4, 2.4 } },
+}
+ui.IconImg, ui.IconEI = {}, {}
+function ui.IconContent(kind)
+	if ui.IconImg[kind] then return ui.IconImg[kind] end
+	local shapes = ui.IconShapes[kind] or ui.IconShapes.Settings
+	local S, SUB, N = 3, 3, 48
+	local function inside(sh, x, y)
+		local t = sh[1]:gsub("^%-", "")
+		if t == "c" then return (x - sh[2]) ^ 2 + (y - sh[3]) ^ 2 <= sh[4] ^ 2
+		elseif t == "r" then local d = (x - sh[2]) ^ 2 + (y - sh[3]) ^ 2; return d >= sh[5] ^ 2 and d <= sh[4] ^ 2
+		elseif t == "k" then
+			local x1, y1, x2, y2, w = sh[2], sh[3], sh[4], sh[5], sh[6]
+			local dx, dy = x2 - x1, y2 - y1
+			local u = math.clamp(((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy), 0, 1)
+			return (x - (x1 + u * dx)) ^ 2 + (y - (y1 + u * dy)) ^ 2 <= (w / 2) ^ 2
+		else
+			local cx, cy, d, R, R2 = sh[2], sh[3], sh[4], sh[5], sh[6]
+			local a1, a2 = (x - cx) ^ 2 + (y - (cy + d)) ^ 2, (x - cx) ^ 2 + (y - (cy - d)) ^ 2
+			return a1 <= R * R and a2 <= R * R and not (a1 <= R2 * R2 and a2 <= R2 * R2)
+		end
+	end
+	local buf = buffer.create(N * N * 4)
+	for py = 0, N - 1 do
+		for px = 0, N - 1 do
+			local hit = 0
+			for sy = 0, SUB - 1 do
+				for sx = 0, SUB - 1 do
+					local x, y = (px + (sx + 0.5) / SUB) / S, (py + (sy + 0.5) / SUB) / S
+					local pos, neg = false, false
+					for _, sh in ipairs(shapes) do
+						if sh[1]:sub(1, 1) == "-" then
+							if not neg and inside(sh, x, y) then neg = true end
+						elseif not pos and inside(sh, x, y) then pos = true end
+					end
+					if pos and not neg then hit += 1 end
+				end
+			end
+			local o = (py * N + px) * 4
+			buffer.writeu8(buf, o, 255); buffer.writeu8(buf, o + 1, 255); buffer.writeu8(buf, o + 2, 255)
+			buffer.writeu8(buf, o + 3, math.floor(hit / (SUB * SUB) * 255 + 0.5))
+		end
+	end
+	local ei = game:GetService("AssetService"):CreateEditableImage({ Size = Vector2.new(N, N) })
+	ei:WritePixelsBuffer(Vector2.zero, Vector2.new(N, N), buf)
+	ui.IconEI[#ui.IconEI + 1] = ei
+	ui.IconImg[kind] = Content.fromObject(ei)
+	return ui.IconImg[kind]
+end
+function ui.Icon(parent, kind, px, py)
+	local ok, content = pcall(ui.IconContent, kind)
+	if not ok then return ui.IconFrames(parent, kind, px, py) end
+	local img = New("ImageLabel", { Position = UDim2.fromOffset(px, py), Size = UDim2.fromOffset(16, 16), BackgroundTransparency = 1, BorderSizePixel = 0 }, parent)
+	img.ImageContent = content
+	return function(c) img.ImageColor3 = c end
 end
 
 -- the Hub is the only tab open at first; it opens and closes every other tab
@@ -5405,7 +5588,8 @@ function ui.BuildWindow()
 		New("UICorner", { CornerRadius = UDim.new(0, 7) }, b)
 		local mark = New("Frame", { Position = UDim2.fromOffset(0, 8), Size = UDim2.new(0, 3, 1, -16), BorderSizePixel = 0 }, b)
 		New("UICorner", { CornerRadius = UDim.new(1, 0) }, mark)
-		local l = New("TextLabel", { Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -44, 1, 0), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 14, TextColor3 = C_LIGHT, TextXAlignment = Enum.TextXAlignment.Left }, b)
+		local setIcon = ui.Icon(b, cat, 14, 9)
+		local l = New("TextLabel", { Position = UDim2.fromOffset(38, 0), Size = UDim2.new(1, -68, 1, 0), BackgroundTransparency = 1, Text = cat, Font = FONT_B, TextSize = 14, TextColor3 = C_LIGHT, TextXAlignment = Enum.TextXAlignment.Left }, b)
 		local cnt = New("TextLabel", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(26, 16), BackgroundColor3 = Color3.fromRGB(12, 12, 18), BorderSizePixel = 0, Text = tostring(#ByCat[cat]), Font = FONT, TextSize = 11, TextColor3 = C_DIM }, b)
 		New("UICorner", { CornerRadius = UDim.new(1, 0) }, cnt)
 		local hov = false
@@ -5418,6 +5602,7 @@ function ui.BuildWindow()
 			mark.Visible = sel
 			mark.BackgroundColor3 = Accent(i * 0.1)
 			l.TextColor3 = sel and WHITE or C_LIGHT
+			setIcon(sel and Accent(i * 0.1):Lerp(WHITE, 0.35) or l.TextColor3)
 		end)
 		b.MouseButton1Click:Connect(function() ClosePicker(); ui.WinSelect(i) end)
 	end
@@ -5599,6 +5784,7 @@ function ui.Unload()
 		pcall(function() game:GetService("ContextActionService"):UnbindAction(n) end)
 	end
 	Modal.Modal = false
+	for _, e in ipairs(ui.IconEI) do pcall(function() e:Destroy() end) end
 	Blur:Destroy()
 	Gui:Destroy()
 end
