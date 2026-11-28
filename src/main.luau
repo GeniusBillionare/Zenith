@@ -1006,47 +1006,77 @@ Module{ Name = "Spider", Category = "Movement", Desc = "Climb up walls by walkin
 		end
 	end }
 
-Module{ Name = "FreeClimb", Category = "Movement", Desc = "Climb any wall like a ladder. Walk into it to start, then W and S go up and down, A and D go sideways, and you can mix them to go diagonal. Jump, touch the ground or reach the top to let go.",
+-- FreeClimb: grab any wall by walking or jumping into it. A BodyVelocity carries you along the wall, so the wall's own
+-- collision and gravity are handled by physics, and the wall is re-scanned every frame so angled walls and corners work.
+ui.FC = {}
+function ui.FC.Wall(from, dir, len, anchoredOnly)
+	local hit = workspace:Raycast(from, dir * len, RayParams())
+	if not hit or hit.Instance:IsA("TrussPart") then return nil end
+	if anchoredOnly and not hit.Instance.Anchored then return nil end
+	local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+	if mdl and mdl:FindFirstChildOfClass("Humanoid") then return nil end
+	if hit.Normal.Y > 0.75 or hit.Normal.Y < -0.75 then return nil end
+	return hit
+end
+function ui.FC.Stop(m, vel, cool)
+	m._c = nil
+	if m._bv then m._bv:Destroy(); m._bv = nil end
+	local h, r = Hum(), Root()
+	if h then
+		h.AutoRotate = true
+		pcall(function()
+			h:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+			h:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+			h:ChangeState(Enum.HumanoidStateType.Freefall)
+		end)
+	end
+	if r then r.AssemblyLinearVelocity = vel or Vector3.zero end
+	m._cool = os.clock() + (cool or 0.5)
+end
+Module{ Name = "FreeClimb", Category = "Movement", Desc = "Climb any wall like a ladder. Walk or jump into a wall to grab it, then W and S go up and down, A and D go sideways, and you can mix them for diagonals. Jump, touch the ground or reach the top to let go.",
 	Settings = {
 		Slider("Speed", 4, 80, 1, 22, "How fast you climb, in studs per second."),
-		Slider("Reach", 1.5, 6, 0.5, 3, "How close to a wall you have to walk to grab it."),
+		Slider("Reach", 1.5, 6, 0.5, 3, "How close to a wall you have to be to grab it."),
 	},
 	OnEnable = function(m)
-		m._c, m._jump = nil, false
+		m._c, m._cool, m._jump = nil, 0, false
 		Hook(m, UIS.JumpRequest, function() m._jump = true end)
 	end,
-	OnDisable = function(m)
-		local r = Root()
-		if m._c and r then r.AssemblyLinearVelocity = Vector3.zero end
-		m._c = nil
-	end,
-	OnTick = function(m, dt)
+	OnDisable = function(m) if m._c then ui.FC.Stop(m) end end,
+	OnTick = function(m)
 		local h, r = Hum(), Root()
-		if not h or not r or h.Health <= 0 then m._c = nil return end
-		local V, now, c = m.Values, os.clock(), m._c
-		local function wall(from, dir, len)
-			local hit = workspace:Raycast(from, dir * len, RayParams())
-			if hit and not hit.Instance:IsA("TrussPart") then
-				local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
-				if mdl and mdl:FindFirstChildOfClass("Humanoid") then return nil end
-				if hit.Normal.Y < 0.75 and hit.Normal.Y > -0.75 then return hit end
-			end
-			return nil
-		end
-		if not c then
-			m._jump = false
-			if h.Sit or h.MoveDirection.Magnitude < 0.1 then return end
-			local md = Vector3.new(h.MoveDirection.X, 0, h.MoveDirection.Z).Unit
-			local hit = wall(r.Position, md, V.Reach)
-			if hit then m._c = { n = hit.Normal, t = now + 0.25 } end
+		if not h or not r or h.Health <= 0 or h.Sit then
+			if m._c then ui.FC.Stop(m) end
 			return
 		end
-		-- climbing
+		local V, now, c = m.Values, os.clock(), m._c
+		if not c then
+			m._jump = false
+			if now < m._cool or h.MoveDirection.Magnitude < 0.1 then return end
+			local md = Vector3.new(h.MoveDirection.X, 0, h.MoveDirection.Z).Unit
+			local hit = ui.FC.Wall(r.Position, md, V.Reach, true)
+			if hit and md:Dot(-hit.Normal) > 0.35 then
+				m._c = { n = hit.Normal, t = now + 0.3 }
+				local bv = Instance.new("BodyVelocity")
+				bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+				bv.Velocity = Vector3.zero
+				bv.Parent = r
+				m._bv = bv
+				h.AutoRotate = false
+				pcall(function()
+					h:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+					h:SetStateEnabled(Enum.HumanoidStateType.Running, false)
+					h:ChangeState(Enum.HumanoidStateType.Climbing)
+				end)
+			end
+			return
+		end
+		local n = c.n
+		-- jumping lets go and pushes you off the wall
 		local jumped = m._jump or h.Jump or Down(Enum.KeyCode.Space)
 		m._jump = false
 		if jumped and now > c.t then
-			r.AssemblyLinearVelocity = c.n * 18 + Vector3.new(0, h.JumpPower * 0.85, 0)
-			m._c = nil
+			ui.FC.Stop(m, n * 18 + Vector3.new(0, h.JumpPower * 0.85, 0), 0.5)
 			return
 		end
 		local mv = ui.MoveVec()
@@ -1054,36 +1084,53 @@ Module{ Name = "FreeClimb", Category = "Movement", Desc = "Climb any wall like a
 		local y = (Down(Enum.KeyCode.W) and 1 or 0) - (Down(Enum.KeyCode.S) and 1 or 0) + mv.Y
 		local inp = Vector3.new(x, y, 0)
 		if inp.Magnitude > 1 then inp = inp.Unit end
-		local n = c.n
-		local up = (Vector3.yAxis - n * n.Y).Unit
-		local right = (-n):Cross(Vector3.yAxis)
-		right = right.Magnitude > 0.01 and right.Unit or Vector3.xAxis
-		local pos = r.Position + (up * inp.Y + right * inp.X) * V.Speed * dt
-		local hit = wall(pos + n * 0.8, -n, 3.2)
+		local function axes(nn)
+			local up = (Vector3.yAxis - nn * nn.Y).Unit
+			local right = (-nn):Cross(Vector3.yAxis)
+			return up, (right.Magnitude > 0.01 and right.Unit or Vector3.xAxis)
+		end
+		local up, right = axes(n)
+		local pos = r.Position
+		-- touching the ground again ends it, unless you are still climbing up
+		if now > c.t and inp.Y <= 0.1 and workspace:Raycast(pos, Vector3.new(0, -(h.HipHeight + r.Size.Y / 2 + 0.5), 0), RayParams()) then
+			ui.FC.Stop(m, Vector3.zero, 0.4)
+			return
+		end
+		-- find the wall we are on: straight ahead first, then around inside and outside corners
+		local hit = ui.FC.Wall(pos + n * 0.5, -n, 3.2)
+		if not hit and math.abs(inp.X) > 0.1 then
+			local sx = inp.X > 0 and 1 or -1
+			hit = ui.FC.Wall(pos, right * sx, 2.4)
+			if not hit then hit = ui.FC.Wall(pos + right * sx * 2.6 - n * 2.4, -right * sx, 3.4) end
+		end
 		if not hit then
-			if inp.Y > 0.2 then
-				-- reached the top: step up and over
-				local over = Vector3.new(-n.X, 0, -n.Z)
+			c.miss = c.miss or now
+			if now - c.miss > 0.4 then ui.FC.Stop(m, Vector3.zero, 0.4) end
+			m._bv.Velocity = Vector3.zero
+			return
+		end
+		c.miss = nil
+		-- reached the top: nothing at head height any more, so step up and over the ledge
+		if inp.Y > 0.1 then
+			local head = ui.FC.Wall(pos + Vector3.new(0, 2.6, 0) + hit.Normal * 0.5, -hit.Normal, 3.2)
+			if not head then
+				local over = Vector3.new(-hit.Normal.X, 0, -hit.Normal.Z)
 				over = over.Magnitude > 0.01 and over.Unit or Vector3.zero
-				r.CFrame = CFrame.new(r.Position + Vector3.new(0, 2.6, 0) + over * 2.2) * r.CFrame.Rotation
-				r.AssemblyLinearVelocity = Vector3.zero
-				m._c = nil
-			else
-				r.AssemblyLinearVelocity = Vector3.zero
+				r.CFrame = CFrame.new(pos + Vector3.new(0, 3.4, 0) + over * 2.6) * r.CFrame.Rotation
+				ui.FC.Stop(m, over * 10, 0.8)
+				return
 			end
-			return
 		end
-		c.n = hit.Normal
-		-- standing on the ground again ends it, unless you are still going up
-		if now > c.t and inp.Y <= 0.1 and workspace:Raycast(r.Position, Vector3.new(0, -(h.HipHeight + r.Size.Y / 2 + 0.4), 0), RayParams()) then
-			m._c = nil
-			return
-		end
-		local np = hit.Position + hit.Normal * 1.5
-		r.CFrame = CFrame.lookAt(np, np - hit.Normal, Vector3.yAxis)
-		r.AssemblyLinearVelocity = Vector3.zero
+		local nn = hit.Normal
+		c.n = nn
+		up, right = axes(nn)
+		-- keep a fixed distance from the wall, face it, and carry the character along it
+		local dist = (pos - hit.Position):Dot(nn)
+		local np = pos + nn * math.clamp(1.3 - dist, -2.5, 2.5)
+		r.CFrame = CFrame.lookAt(np, np - nn, Vector3.yAxis)
 		r.AssemblyAngularVelocity = Vector3.zero
-		pcall(function() h:ChangeState(Enum.HumanoidStateType.Climbing) end)
+		m._bv.Velocity = (right * inp.X + up * inp.Y) * V.Speed
+		if h:GetState() ~= Enum.HumanoidStateType.Climbing then pcall(function() h:ChangeState(Enum.HumanoidStateType.Climbing) end) end
 	end }
 
 Module{ Name = "Gravity", Category = "Movement", Desc = "Changes gravity for your own physics. Low values make you float, high values slam you down.",
@@ -3994,7 +4041,7 @@ do
 			for _, st in ipairs(m.Settings or {}) do
 				if st.Type == "Slider" then
 					local v, lim = m.Values[st.Name], ui.MaxOf(st)
-					if type(v) == "number" and v > lim then
+					if type(v) == "number" and v > lim and v <= (st.High or st.Max) then
 						m.Values[st.Name] = lim
 						table.insert(changedList, { m, st.Name })
 					end
@@ -4036,7 +4083,7 @@ do
 						local v = decode(e.values[st.Name])
 						if v ~= nil then
 							if st.Type == "Slider" and type(v) == "number" then
-								m.Values[st.Name] = math.clamp(v, st.Min, st.High or st.Max)
+								m.Values[st.Name] = math.max(v, st.Min)
 							elseif st.Type == "Toggle" and type(v) == "boolean" then
 								m.Values[st.Name] = v
 							elseif st.Type == "Mode" and type(v) == "string" then
@@ -4919,8 +4966,16 @@ local function SliderRow(m, s, parent, order)
 	New("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
 	local lbl = SettingLabel(row, s.Name)
 	lbl.Position = UDim2.fromOffset(10, -3)
-	local valL = RightLabel(row)
-	valL.Position = UDim2.new(1, -10, 0, -3)
+	-- the number is a text box: click it and type any value, even above the slider's maximum
+	local valL = New("TextBox", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, -3), Size = UDim2.new(0.4, 0, 1, 0), BackgroundTransparency = 1, Font = FONT, TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Right, ClearTextOnFocus = true, Text = "" }, row)
+	valL.FocusLost:Connect(function()
+		local v = tonumber(valL.Text)
+		if v and v == v and math.abs(v) < 1e9 then
+			m.Values[s.Name] = tonumber(string.format("%.4f", math.max(v, s.Min)))
+			changed(m, s.Name)
+		end
+		ui.RefreshSliders()
+	end)
 	local function show()
 		local v = m.Values[s.Name]
 		local f = math.clamp((v - s.Min) / (ui.MaxOf(s) - s.Min), 0, 1)
@@ -5056,24 +5111,25 @@ local function BindRow(m, parent, order)
 	row.MouseButton1Click:Connect(function()
 		if Listening then Repaint(Listening.m) end
 		Listening = { m = m }
-		valL.Text = "[ press a key ]"
+		valL.Text = "..."
+		valL.TextColor3 = Accent()
 	end)
 	return row
 end
 
--- key setting: click it, press a key, done (Escape cancels)
+-- key setting: looks and works like the Bind row. Click it, press a key, done (Backspace cancels)
 function ui.KeyRow(m, s, parent, order)
 	local row = SettingButton(parent, order)
 	SettingLabel(row, s.Name)
 	local valL = RightLabel(row)
-	Reg(valL, "TextColor3")
-	local function refresh() valL.Text = "[" .. tostring(m.Values[s.Name]) .. "]" end
+	local function refresh() valL.TextColor3 = C_DIM; valL.Text = "[" .. tostring(m.Values[s.Name]) .. "]" end
 	refresh()
 	AddPainter(valL, refresh)
 	row.MouseButton1Click:Connect(function()
 		if ui.KeyCancel then ui.KeyCancel() end
 		if Listening then Repaint(Listening.m); Listening = nil end
-		valL.Text = "[ press a key ]"
+		valL.Text = "..."
+		valL.TextColor3 = Accent()
 		ui.KeyCancel = function() ui.KeyCapture, ui.KeyCancel = nil, nil; refresh() end
 		ui.KeyCapture = function(key)
 			ui.KeyCancel = nil
@@ -6018,4 +6074,9 @@ else
 	ui._stage2 = true
 end
 Gui.Enabled = true
+do
+	-- the Configs list starts on this game's own config when it has one, so Save Config goes there
+	local g0 = ui.FindGame(ui.GameKey)
+	if g0 then ui.ConfigsMod.Values.Target = ui.GameLabel(g0) end
+end
 ui.Notify("Zenith Client loaded" .. (ui.Config and (ui.FromSession and " (restored after teleport)" or (ui.GameLoaded and (" (" .. ui.GameLoaded .. " config loaded)") or " (config loaded)")) or "") .. " - press " .. GuiSettings.Values["Menu Key"] .. " to open the menu", true)
